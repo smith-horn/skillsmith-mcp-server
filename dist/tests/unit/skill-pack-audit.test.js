@@ -1,0 +1,581 @@
+/**
+ * @fileoverview Unit tests for skill_pack_audit tool
+ * @module @skillsmith/mcp-server/tests/unit/skill-pack-audit
+ *
+ * SMI-2905: Version drift detection for skill packs
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { promises as fs } from 'fs';
+import { join, resolve } from 'path';
+import { tmpdir } from 'os';
+import { executeSkillPackAudit, skillPackAuditInputSchema, } from '../../src/tools/skill-pack-audit.js';
+import { createTestDatabase, closeDatabase } from '@skillsmith/core/testkit';
+import { ErrorCodes } from '@skillsmith/core';
+// ============================================================================
+// Helpers
+// ============================================================================
+/** Seed a single skill_versions row for testing */
+function seedVersion(db, skillId, semver, recordedAt = Math.floor(Date.now() / 1000)) {
+    // Include semver+recordedAt in hash to keep each row unique across calls
+    db.prepare(`INSERT OR IGNORE INTO skill_versions (skill_id, content_hash, semver, recorded_at)
+     VALUES (?, ?, ?, ?)`).run(skillId, `hash-${skillId}-${semver ?? 'null'}-${recordedAt}`, semver, recordedAt);
+}
+/** Write a minimal SKILL.md file with given name and optional version */
+async function writeSkillMd(dir, skillName, version) {
+    const frontmatter = version
+        ? `---\nname: ${skillName}\ndescription: Test skill\nversion: ${version}\n---\n`
+        : `---\nname: ${skillName}\ndescription: Test skill\n---\n`;
+    await fs.writeFile(join(dir, 'SKILL.md'), frontmatter);
+}
+// ============================================================================
+// Test setup
+// ============================================================================
+describe('skill_pack_audit', () => {
+    let testDir;
+    let skillsDir;
+    let db;
+    let toolContext;
+    beforeEach(async () => {
+        testDir = await fs.mkdtemp(join(tmpdir(), 'pack-audit-test-' + Date.now() + '-'));
+        skillsDir = join(testDir, 'skills');
+        await fs.mkdir(skillsDir);
+        db = await createTestDatabase();
+        toolContext = { db };
+    });
+    afterEach(async () => {
+        closeDatabase(db);
+        await fs.rm(testDir, { recursive: true, force: true });
+    });
+    // ============================================================================
+    // Input schema
+    // ============================================================================
+    describe('skillPackAuditInputSchema', () => {
+        it('requires pack_path', () => {
+            expect(() => skillPackAuditInputSchema.parse({})).toThrow();
+        });
+        it('rejects empty pack_path', () => {
+            expect(() => skillPackAuditInputSchema.parse({ pack_path: '' })).toThrow();
+        });
+        it('accepts a valid pack_path', () => {
+            const result = skillPackAuditInputSchema.parse({ pack_path: '/some/path' });
+            expect(result.pack_path).toBe('/some/path');
+        });
+    });
+    // ============================================================================
+    // Path traversal protection
+    // ============================================================================
+    describe('path traversal protection', () => {
+        it('throws VALIDATION_INVALID_TYPE for path traversal in pack_path', async () => {
+            await expect(executeSkillPackAudit({ pack_path: '../../../etc/passwd' }, toolContext)).rejects.toMatchObject({
+                code: ErrorCodes.VALIDATION_INVALID_TYPE,
+            });
+        });
+        it('throws VALIDATION_INVALID_TYPE for encoded path traversal', async () => {
+            await expect(executeSkillPackAudit({ pack_path: '%2e%2e/secrets' }, toolContext)).rejects.toMatchObject({
+                code: ErrorCodes.VALIDATION_INVALID_TYPE,
+            });
+        });
+    });
+    // ============================================================================
+    // Missing skills/ directory
+    // ============================================================================
+    describe('missing skills/ directory', () => {
+        it('throws SKILL_NOT_FOUND when pack has no skills/ directory', async () => {
+            const emptyPack = await fs.mkdtemp(join(tmpdir(), 'empty-pack-'));
+            try {
+                await expect(executeSkillPackAudit({ pack_path: emptyPack }, toolContext)).rejects.toMatchObject({
+                    code: ErrorCodes.SKILL_NOT_FOUND,
+                });
+            }
+            finally {
+                await fs.rm(emptyPack, { recursive: true, force: true });
+            }
+        });
+    });
+    // ============================================================================
+    // Empty skills/ directory
+    // ============================================================================
+    describe('empty skills/ directory', () => {
+        it('returns zero skills for empty skills/ directory', async () => {
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            expect(result.skillCount).toBe(0);
+            expect(result.driftCount).toBe(0);
+            expect(result.noRegistryDataCount).toBe(0);
+            expect(result.skills).toEqual([]);
+        });
+    });
+    // ============================================================================
+    // no_registry_data — skill not in local cache
+    // ============================================================================
+    describe('no_registry_data', () => {
+        it('marks skill as no_registry_data when not in skill_versions', async () => {
+            const skillDir = join(skillsDir, 'linear');
+            await fs.mkdir(skillDir);
+            await writeSkillMd(skillDir, 'linear', '1.2.0');
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            expect(result.skillCount).toBe(1);
+            expect(result.skills[0]).toMatchObject({
+                name: 'linear',
+                bundledVersion: '1.2.0',
+                registryVersion: null,
+                skillId: null,
+                status: 'no_registry_data',
+            });
+            expect(result.noRegistryDataCount).toBe(1);
+            expect(result.driftCount).toBe(0);
+        });
+        it('marks skill as no_registry_data when registry row has null semver', async () => {
+            seedVersion(db, 'smith-horn/linear', null);
+            const skillDir = join(skillsDir, 'linear');
+            await fs.mkdir(skillDir);
+            await writeSkillMd(skillDir, 'linear', '1.2.0');
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            expect(result.skills[0].status).toBe('no_registry_data');
+        });
+        it('does not match unrelated skills when name contains LIKE wildcard character', async () => {
+            // Without escaping, name "linear%" would match both "smith-horn/linear" and "smith-horn/linearfoo"
+            seedVersion(db, 'smith-horn/linear', '1.0.0');
+            seedVersion(db, 'smith-horn/linearfoo', '2.0.0');
+            const skillDir = join(skillsDir, 'linear-wildcard');
+            await fs.mkdir(skillDir);
+            await fs.writeFile(join(skillDir, 'SKILL.md'), '---\nname: linear%\ndescription: Test\nversion: 1.0.0\n---\n');
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            // "linear%" is not a real skill_id suffix — both seeded IDs should be non-matches
+            expect(result.skills[0].status).toBe('no_registry_data');
+        });
+        it('does not match unrelated skills when name contains a backslash', async () => {
+            // Without escaping backslash first, name "lin\ear" corrupts the ESCAPE pattern
+            seedVersion(db, 'smith-horn/linear', '1.0.0');
+            const skillDir = join(skillsDir, 'backslash-skill');
+            await fs.mkdir(skillDir);
+            await fs.writeFile(join(skillDir, 'SKILL.md'), '---\nname: "lin\\\\ear"\ndescription: Test\nversion: 1.0.0\n---\n');
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            expect(result.skills[0].status).toBe('no_registry_data');
+        });
+    });
+    // ============================================================================
+    // current — versions match
+    // ============================================================================
+    describe('current', () => {
+        it('marks skill as current when bundled equals registry version', async () => {
+            seedVersion(db, 'smith-horn/linear', '1.2.0');
+            const skillDir = join(skillsDir, 'linear');
+            await fs.mkdir(skillDir);
+            await writeSkillMd(skillDir, 'linear', '1.2.0');
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            expect(result.skills[0]).toMatchObject({
+                name: 'linear',
+                bundledVersion: '1.2.0',
+                registryVersion: '1.2.0',
+                skillId: 'smith-horn/linear',
+                status: 'current',
+            });
+            expect(result.driftCount).toBe(0);
+        });
+    });
+    // ============================================================================
+    // outdated — registry is newer
+    // ============================================================================
+    describe('outdated', () => {
+        it('marks skill as outdated when registry has newer minor version', async () => {
+            seedVersion(db, 'smith-horn/linear', '1.3.0');
+            const skillDir = join(skillsDir, 'linear');
+            await fs.mkdir(skillDir);
+            await writeSkillMd(skillDir, 'linear', '1.2.0');
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            expect(result.skills[0].status).toBe('outdated');
+            expect(result.skills[0].registryVersion).toBe('1.3.0');
+            expect(result.driftCount).toBe(1);
+        });
+        it('marks skill as outdated when registry has newer patch version', async () => {
+            seedVersion(db, 'author/docker', '2.1.5');
+            const skillDir = join(skillsDir, 'docker');
+            await fs.mkdir(skillDir);
+            await writeSkillMd(skillDir, 'docker', '2.1.3');
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            expect(result.skills[0].status).toBe('outdated');
+            expect(result.driftCount).toBe(1);
+        });
+        it('marks skill as outdated when registry has newer major version', async () => {
+            seedVersion(db, 'org/governance', '2.0.0');
+            const skillDir = join(skillsDir, 'governance');
+            await fs.mkdir(skillDir);
+            await writeSkillMd(skillDir, 'governance', '1.9.9');
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            expect(result.skills[0].status).toBe('outdated');
+        });
+    });
+    // ============================================================================
+    // ahead — bundled is newer than registry
+    // ============================================================================
+    describe('ahead', () => {
+        it('marks skill as ahead when bundled version is newer', async () => {
+            seedVersion(db, 'smith-horn/linear', '1.0.0');
+            const skillDir = join(skillsDir, 'linear');
+            await fs.mkdir(skillDir);
+            await writeSkillMd(skillDir, 'linear', '1.1.0');
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            expect(result.skills[0].status).toBe('ahead');
+            expect(result.driftCount).toBe(1);
+        });
+    });
+    // ============================================================================
+    // missing_version — SKILL.md has no valid version
+    // ============================================================================
+    describe('missing_version', () => {
+        it('marks skill as missing_version when SKILL.md has no version field', async () => {
+            const skillDir = join(skillsDir, 'varlock');
+            await fs.mkdir(skillDir);
+            await writeSkillMd(skillDir, 'varlock'); // no version arg
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            expect(result.skills[0]).toMatchObject({
+                name: 'varlock',
+                bundledVersion: null,
+                status: 'missing_version',
+            });
+        });
+        it('uses directory name as skill name when SKILL.md has no name field', async () => {
+            const skillDir = join(skillsDir, 'my-tool');
+            await fs.mkdir(skillDir);
+            await fs.writeFile(join(skillDir, 'SKILL.md'), '---\ndescription: A tool with no name field\n---\n');
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            expect(result.skills[0].name).toBe('my-tool');
+        });
+        it('marks skill as missing_version when version is non-semver', async () => {
+            const skillDir = join(skillsDir, 'docker');
+            await fs.mkdir(skillDir);
+            await fs.writeFile(join(skillDir, 'SKILL.md'), '---\nname: docker\ndescription: Test\nversion: latest\n---\n');
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            expect(result.skills[0].status).toBe('missing_version');
+            expect(result.skills[0].bundledVersion).toBeNull();
+        });
+    });
+    // ============================================================================
+    // Multiple skills
+    // ============================================================================
+    describe('multiple skills', () => {
+        it('handles a mix of statuses across multiple skills', async () => {
+            // current: governance 1.0.0 === registry 1.0.0
+            seedVersion(db, 'smith-horn/governance', '1.0.0');
+            const govDir = join(skillsDir, 'governance');
+            await fs.mkdir(govDir);
+            await writeSkillMd(govDir, 'governance', '1.0.0');
+            // outdated: linear 1.0.0 but registry has 1.2.0
+            seedVersion(db, 'smith-horn/linear', '1.2.0');
+            const linDir = join(skillsDir, 'linear');
+            await fs.mkdir(linDir);
+            await writeSkillMd(linDir, 'linear', '1.0.0');
+            // no_registry_data: docker not in DB
+            const dockerDir = join(skillsDir, 'docker');
+            await fs.mkdir(dockerDir);
+            await writeSkillMd(dockerDir, 'docker', '3.0.0');
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            expect(result.skillCount).toBe(3);
+            expect(result.driftCount).toBe(1); // only linear
+            expect(result.noRegistryDataCount).toBe(1); // only docker
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const byName = Object.fromEntries(result.skills.map((s) => [s.name, s]));
+            expect(byName['governance']?.status).toBe('current');
+            expect(byName['linear']?.status).toBe('outdated');
+            expect(byName['docker']?.status).toBe('no_registry_data');
+        });
+        it('returns skills sorted alphabetically', async () => {
+            for (const name of ['zebra', 'apple', 'mango']) {
+                const dir = join(skillsDir, name);
+                await fs.mkdir(dir);
+                await writeSkillMd(dir, name, '1.0.0');
+            }
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            expect(result.skills.map((s) => s.name)).toEqual(['apple', 'mango', 'zebra']);
+        });
+        it('skips subdirectories with no SKILL.md', async () => {
+            // subdirectory with no SKILL.md
+            await fs.mkdir(join(skillsDir, 'empty-subdir'));
+            // valid skill
+            const dir = join(skillsDir, 'linear');
+            await fs.mkdir(dir);
+            await writeSkillMd(dir, 'linear', '1.0.0');
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            expect(result.skillCount).toBe(1);
+            expect(result.skills[0].name).toBe('linear');
+        });
+    });
+    // ============================================================================
+    // packPath in response
+    // ============================================================================
+    describe('packPath in response', () => {
+        it('returns resolved absolute packPath in response', async () => {
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            expect(result.packPath).toBeTruthy();
+            expect(result.packPath).toBe(resolve(testDir));
+        });
+    });
+    // ============================================================================
+    // Directory cap
+    // ============================================================================
+    describe('directory cap', () => {
+        it('throws VALIDATION_INVALID_TYPE when pack has more than 500 skill directories', async () => {
+            await Promise.all(Array.from({ length: 501 }, (_, i) => fs.mkdir(join(skillsDir, `skill-${String(i).padStart(4, '0')}`))));
+            await expect(executeSkillPackAudit({ pack_path: testDir }, toolContext)).rejects.toMatchObject({
+                code: ErrorCodes.VALIDATION_INVALID_TYPE,
+            });
+        });
+    });
+    // ============================================================================
+    // Registry lookup uses most recent record
+    // ============================================================================
+    describe('registry version selection', () => {
+        it('uses the most recently recorded version when multiple registry rows exist', async () => {
+            const now = Math.floor(Date.now() / 1000);
+            // Older record
+            seedVersion(db, 'smith-horn/linear', '1.0.0', now - 3600);
+            // Newer record
+            seedVersion(db, 'smith-horn/linear', '1.5.0', now);
+            const skillDir = join(skillsDir, 'linear');
+            await fs.mkdir(skillDir);
+            await writeSkillMd(skillDir, 'linear', '1.0.0');
+            const result = await executeSkillPackAudit({ pack_path: testDir }, toolContext);
+            // Most recent record (1.5.0) should be used — bundled 1.0.0 is outdated
+            expect(result.skills[0].registryVersion).toBe('1.5.0');
+            expect(result.skills[0].status).toBe('outdated');
+        });
+    });
+    // ============================================================================
+    // SMI-4124: Trigger-quality + namespace detection
+    // ============================================================================
+    describe('SMI-4124 trigger-quality + namespace checks', () => {
+        async function writeFullSkillMd(dir, opts) {
+            const lines = ['---', `name: ${opts.name}`];
+            if (opts.description !== undefined)
+                lines.push(`description: ${opts.description}`);
+            if (opts.version !== undefined)
+                lines.push(`version: ${opts.version}`);
+            if (opts.tags !== undefined) {
+                lines.push('tags:');
+                for (const tag of opts.tags)
+                    lines.push(`  - ${tag}`);
+            }
+            lines.push('---', '');
+            await fs.writeFile(join(dir, 'SKILL.md'), lines.join('\n'));
+        }
+        /**
+         * Rename the pack testDir to a specific basename since namespace detection
+         * uses basename(packPath). We create a sibling dir with the desired name.
+         */
+        async function makePackWithName(packName) {
+            const parent = await fs.mkdtemp(join(tmpdir(), 'pack-name-test-' + Date.now() + '-'));
+            const packDir = join(parent, packName);
+            await fs.mkdir(packDir);
+            await fs.mkdir(join(packDir, 'skills'));
+            return packDir;
+        }
+        it('flags a generic trigger word in skill name as error (case 1)', async () => {
+            // Pack name "planning-skills" -> derives domain "planning"
+            const packDir = await makePackWithName('planning-skills');
+            const sDir = join(packDir, 'skills', 'spec');
+            await fs.mkdir(sDir);
+            await writeFullSkillMd(sDir, { name: 'spec', description: 'Unrelated description.' });
+            const result = await executeSkillPackAudit({ pack_path: packDir }, toolContext);
+            expect(result.triggerQuality).toBeDefined();
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const entry = result.triggerQuality.skills.find((s) => s.id === 'spec');
+            expect(entry).toBeDefined();
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const nameFlag = entry.flags.find((f) => f.location === 'name' && f.token === 'spec');
+            expect(nameFlag).toBeDefined();
+            expect(nameFlag.severity).toBe('error');
+            expect(nameFlag.suggested).toBe('planning-spec');
+            expect(result.triggerQuality.summary.errorCount).toBeGreaterThanOrEqual(1);
+            await fs.rm(packDir, { recursive: true, force: true });
+        });
+        it('flags a generic trigger word in description only as warning (case 2)', async () => {
+            const packDir = await makePackWithName('planning-skills');
+            const sDir = join(packDir, 'skills', 'roadmap-planner');
+            await fs.mkdir(sDir);
+            // "build" in description, not in name
+            await writeFullSkillMd(sDir, {
+                name: 'roadmap-planner',
+                description: 'Helps you build out a product roadmap.',
+            });
+            const result = await executeSkillPackAudit({ pack_path: packDir }, toolContext);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const entry = result.triggerQuality.skills.find((s) => s.id === 'roadmap-planner');
+            expect(entry).toBeDefined();
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const descFlag = entry.flags.find((f) => f.token === 'build');
+            expect(descFlag).toBeDefined();
+            expect(descFlag.location).toBe('description');
+            expect(descFlag.severity).toBe('warning');
+            expect(descFlag.suggested).toBe('planning-build');
+            await fs.rm(packDir, { recursive: true, force: true });
+        });
+        it('tokenizes block-scalar description correctly (case 3)', async () => {
+            const packDir = await makePackWithName('planning-skills');
+            const sDir = join(packDir, 'skills', 'roadmap');
+            await fs.mkdir(sDir);
+            // Block-scalar description (description: |) — parser returns string[]
+            const md = '---\n' +
+                'name: roadmap\n' +
+                'description: |\n' +
+                '  First line mentioning build.\n' +
+                '  Second line mentioning test.\n' +
+                '---\n';
+            await fs.writeFile(join(sDir, 'SKILL.md'), md);
+            const result = await executeSkillPackAudit({ pack_path: packDir }, toolContext);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const entry = result.triggerQuality.skills.find((s) => s.id === 'roadmap');
+            expect(entry).toBeDefined();
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const tokens = entry.flags.map((f) => f.token);
+            expect(tokens).toEqual(expect.arrayContaining(['build', 'test']));
+            // Both are description-level warnings
+            for (const flag of entry.flags) {
+                expect(flag.location).toBe('description');
+                expect(flag.severity).toBe('warning');
+            }
+            await fs.rm(packDir, { recursive: true, force: true });
+        });
+        it('clamps oversized description (case 4 — no ReDoS)', async () => {
+            const packDir = await makePackWithName('planning-skills');
+            const sDir = join(packDir, 'skills', 'roadmap');
+            await fs.mkdir(sDir);
+            // Craft >> FIELD_LIMITS.description (1024), embed a trigger word LATE.
+            // If clamp works, "spec" (past byte 1024) should NOT be detected.
+            const padding = 'x '.repeat(700); // ~1400 chars
+            const md = '---\n' + 'name: roadmap\n' + `description: ${padding}spec at the tail.\n` + '---\n';
+            await fs.writeFile(join(sDir, 'SKILL.md'), md);
+            const start = Date.now();
+            const result = await executeSkillPackAudit({ pack_path: packDir }, toolContext);
+            const elapsed = Date.now() - start;
+            expect(elapsed).toBeLessThan(2000); // nowhere near pathological
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const entry = result.triggerQuality.skills.find((s) => s.id === 'roadmap');
+            // Either no flags, or flags from the early padding (which has no triggers).
+            if (entry) {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const hasSpec = entry.flags.some((f) => f.token === 'spec');
+                expect(hasSpec).toBe(false);
+            }
+            await fs.rm(packDir, { recursive: true, force: true });
+        });
+        it('derives pack domain from per-skill tags consensus (case 5)', async () => {
+            // Generic namespace "agent-skills" — cannot strip suffix reliably since
+            // it's itself generic. Use tags consensus instead.
+            const packDir = await makePackWithName('agent-skills');
+            const s1 = join(packDir, 'skills', 'research-helper');
+            const s2 = join(packDir, 'skills', 'search-helper');
+            await fs.mkdir(s1);
+            await fs.mkdir(s2);
+            await writeFullSkillMd(s1, {
+                name: 'research-helper',
+                description: 'Assists with research.',
+                tags: ['research', 'retrieval'],
+            });
+            await writeFullSkillMd(s2, {
+                name: 'search-helper',
+                description: 'Helps with search.',
+                tags: ['research', 'retrieval'],
+            });
+            const result = await executeSkillPackAudit({ pack_path: packDir }, toolContext);
+            expect(result.namespaceQuality).not.toBeNull();
+            expect(result.namespaceQuality.suggested).toMatch(/^(research|retrieval)-skills$/);
+            await fs.rm(packDir, { recursive: true, force: true });
+        });
+        it('returns null suggestion when no tag consensus (case 6)', async () => {
+            const packDir = await makePackWithName('tools');
+            const s1 = join(packDir, 'skills', 'alpha');
+            const s2 = join(packDir, 'skills', 'beta');
+            await fs.mkdir(s1);
+            await fs.mkdir(s2);
+            // No tags -> no consensus
+            await writeFullSkillMd(s1, { name: 'alpha', description: 'Alpha skill.' });
+            await writeFullSkillMd(s2, { name: 'beta', description: 'Beta skill.' });
+            const result = await executeSkillPackAudit({ pack_path: packDir }, toolContext);
+            expect(result.namespaceQuality).not.toBeNull();
+            expect(result.namespaceQuality.suggested).toBeNull();
+            expect(result.namespaceQuality.reason).toMatch(/do not converge/i);
+            await fs.rm(packDir, { recursive: true, force: true });
+        });
+        it('returns present-but-empty triggerQuality and null namespace for clean pack (case 7)', async () => {
+            const packDir = await makePackWithName('planning-skills');
+            const sDir = join(packDir, 'skills', 'roadmap-planner');
+            await fs.mkdir(sDir);
+            await writeFullSkillMd(sDir, {
+                name: 'roadmap-planner',
+                description: 'Assists with roadmaps.',
+            });
+            const result = await executeSkillPackAudit({ pack_path: packDir }, toolContext);
+            expect(result.triggerQuality).toBeDefined();
+            expect(result.triggerQuality.skills).toEqual([]);
+            expect(result.triggerQuality.summary).toEqual({
+                totalFlags: 0,
+                errorCount: 0,
+                warningCount: 0,
+            });
+            expect(result.namespaceQuality).toBeNull();
+            await fs.rm(packDir, { recursive: true, force: true });
+        });
+        it('dedups namespace + same skill-name token into one merged flag (case 8)', async () => {
+            // Pack "tools" is generic; skill named "tools" triggers both flags.
+            const packDir = await makePackWithName('tools');
+            const sDir = join(packDir, 'skills', 'tools');
+            await fs.mkdir(sDir);
+            await writeFullSkillMd(sDir, {
+                name: 'tools',
+                description: 'A meta skill.',
+                tags: ['research', 'retrieval'],
+            });
+            const sDir2 = join(packDir, 'skills', 'research-helper');
+            await fs.mkdir(sDir2);
+            await writeFullSkillMd(sDir2, {
+                name: 'research-helper',
+                description: 'Helps with research.',
+                tags: ['research', 'retrieval'],
+            });
+            const result = await executeSkillPackAudit({ pack_path: packDir }, toolContext);
+            expect(result.namespaceQuality).not.toBeNull();
+            // The "tools" skill-name flag should have been merged into the namespace.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const toolsEntry = result.triggerQuality.skills.find((s) => s.id === 'tools');
+            if (toolsEntry) {
+                const hasToolsNameFlag = toolsEntry.flags.some(
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                (f) => f.location === 'name' && f.token === 'tools');
+                expect(hasToolsNameFlag).toBe(false);
+            }
+            // Merged reason references the overlap
+            expect(result.namespaceQuality.reason).toMatch(/tools/);
+            await fs.rm(packDir, { recursive: true, force: true });
+        });
+        it('omits trigger-quality fields when check_trigger_quality=false (case 9)', async () => {
+            const packDir = await makePackWithName('tools');
+            const sDir = join(packDir, 'skills', 'spec');
+            await fs.mkdir(sDir);
+            await writeFullSkillMd(sDir, { name: 'spec', description: 'Test.', version: '1.0.0' });
+            const result = await executeSkillPackAudit({ pack_path: packDir, check_trigger_quality: false }, toolContext);
+            expect('triggerQuality' in result).toBe(false);
+            expect('namespaceQuality' in result).toBe(false);
+            // Legacy fields unchanged
+            expect(result.skillCount).toBe(1);
+            expect(Array.isArray(result.skills)).toBe(true);
+            await fs.rm(packDir, { recursive: true, force: true });
+        });
+        it('preserves legacy response shape for version-drift-only callers (case 10)', async () => {
+            // Simulate a "clean" version-drift audit with the opt-out flag.
+            const packDir = await makePackWithName('planning-skills');
+            const sDir = join(packDir, 'skills', 'roadmap-planner');
+            await fs.mkdir(sDir);
+            await writeFullSkillMd(sDir, {
+                name: 'roadmap-planner',
+                description: 'Clean.',
+                version: '1.0.0',
+            });
+            const result = await executeSkillPackAudit({ pack_path: packDir, check_trigger_quality: false }, toolContext);
+            // Exact legacy keys only
+            expect(Object.keys(result).sort()).toEqual(['driftCount', 'noRegistryDataCount', 'packPath', 'skillCount', 'skills'].sort());
+            await fs.rm(packDir, { recursive: true, force: true });
+        });
+    });
+});
+//# sourceMappingURL=skill-pack-audit.test.js.map

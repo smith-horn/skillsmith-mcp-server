@@ -1,0 +1,360 @@
+/**
+ * @fileoverview LocalIndexer - Scans and indexes skills from ~/.claude/skills/
+ * @module @skillsmith/mcp-server/indexer/LocalIndexer
+ * @see SMI-1809: Local skill indexing for MCP server
+ *
+ * Provides local skill discovery by scanning the user's skills directory,
+ * parsing SKILL.md files for metadata, and returning searchable skill objects.
+ *
+ * @example
+ * const indexer = new LocalIndexer();
+ * const skills = await indexer.index();
+ * console.log(`Indexed ${skills.length} local skills`);
+ */
+
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import { indexLocalSkill } from '@skillsmith/core'
+import { getCanonicalInstallPath } from '@skillsmith/core/install'
+import { parseFrontmatter, type SkillFrontmatter } from './FrontmatterParser.js'
+
+/**
+ * Local skill metadata extracted from SKILL.md
+ */
+export interface LocalSkill {
+  /** Unique ID: local/{name} */
+  id: string
+  /** Skill name from frontmatter or directory name */
+  name: string
+  /** Description from frontmatter */
+  description: string | null
+  /** Author from frontmatter (defaults to "local") */
+  author: string
+  /** Tags from frontmatter */
+  tags: string[]
+  /** Calculated quality score (0-100) */
+  qualityScore: number
+  /** Trust tier is always "local" for local skills */
+  trustTier: 'local'
+  /** Source identifier */
+  source: 'local'
+  /** Full path to the skill directory */
+  path: string
+  /** Whether SKILL.md was found */
+  hasSkillMd: boolean
+  /** Last modified timestamp */
+  lastModified: string | null
+  /** SMI-2759: Source repository URL from frontmatter */
+  repository: string | null
+  /** SMI-2760: Compatibility tags from frontmatter */
+  compatibility?: string[]
+}
+
+/**
+ * Quality scoring weights for local skills
+ */
+const QUALITY_WEIGHTS = {
+  hasSkillMd: 20,
+  hasName: 10,
+  hasDescription: 20,
+  hasTags: 15,
+  hasAuthor: 5,
+  descriptionLength: 15, // Longer descriptions score higher (up to 200 chars)
+  tagCount: 15, // More tags score higher (up to 5 tags)
+}
+
+/**
+ * LocalIndexer class for scanning and indexing local skills
+ */
+export class LocalIndexer {
+  private skillsDir: string
+  private cachedSkills: LocalSkill[] | null = null
+  private lastIndexTime: number = 0
+  private cacheTtl: number
+
+  /**
+   * Create a new LocalIndexer
+   * @param skillsDir - Custom skills directory (defaults to ~/.claude/skills/)
+   * @param cacheTtl - Cache TTL in milliseconds (defaults to 60000 = 1 minute)
+   */
+  constructor(skillsDir?: string, cacheTtl: number = 60000) {
+    // SMI-4578: routes through canonical install path so default-client
+    // directory is defined in exactly one place. Per-client scanning is
+    // handled by the cross-client `getInstalledSkills` (Step 4.5).
+    this.skillsDir = skillsDir || getCanonicalInstallPath()
+    this.cacheTtl = cacheTtl
+  }
+
+  /**
+   * Calculate quality score for a local skill.
+   *
+   * Scoring is based on:
+   * - Presence of SKILL.md file (20 points)
+   * - Has name in frontmatter (10 points)
+   * - Has description (20 points)
+   * - Description length up to 200 chars (15 points)
+   * - Has tags (15 points)
+   * - Tag count up to 5 (15 points)
+   * - Has author (5 points)
+   *
+   * @param frontmatter - Parsed frontmatter
+   * @param hasSkillMd - Whether SKILL.md exists
+   * @returns Quality score from 0-100
+   */
+  calculateQualityScore(frontmatter: SkillFrontmatter, hasSkillMd: boolean): number {
+    let score = 0
+
+    // Base score for having SKILL.md
+    if (hasSkillMd) {
+      score += QUALITY_WEIGHTS.hasSkillMd
+    }
+
+    // Name presence
+    if (frontmatter.name) {
+      score += QUALITY_WEIGHTS.hasName
+    }
+
+    // Description presence and length
+    if (frontmatter.description) {
+      score += QUALITY_WEIGHTS.hasDescription
+      // Bonus for longer descriptions (up to 200 chars)
+      const descLength = Math.min(frontmatter.description.length, 200)
+      score += Math.round((descLength / 200) * QUALITY_WEIGHTS.descriptionLength)
+    }
+
+    // Tags presence and count
+    if (frontmatter.tags.length > 0) {
+      score += QUALITY_WEIGHTS.hasTags
+      // Bonus for more tags (up to 5)
+      const tagBonus = Math.min(frontmatter.tags.length, 5) / 5
+      score += Math.round(tagBonus * QUALITY_WEIGHTS.tagCount)
+    }
+
+    // Author presence
+    if (frontmatter.author) {
+      score += QUALITY_WEIGHTS.hasAuthor
+    }
+
+    return Math.min(score, 100)
+  }
+
+  /**
+   * Index a single skill directory.
+   *
+   * SMI-4587 PR #4 / NEW-E-2: delegates the per-skill metadata extraction
+   * to the new `indexLocalSkill` core helper. This keeps the LocalIndexer
+   * focused on directory traversal + caching, and lets the namespace-audit
+   * `bootstrapUnmanagedSkills` callback share the same code path. The
+   * MCP-side `parseFrontmatter` (richer than the core fallback) is injected
+   * so behaviour stays identical to pre-refactor.
+   *
+   * @param skillDir - Path to the skill directory
+   * @param dirName - Name of the directory
+   * @returns LocalSkill object or null if directory should be skipped
+   */
+  indexSkillDir(skillDir: string, _dirName: string): LocalSkill | null {
+    try {
+      // The core helper derives `name` from `frontmatter.name || basename`,
+      // which matches the pre-refactor `frontmatter.name || dirName`
+      // contract because `dirName === path.basename(skillDir)` for every
+      // call site in this class.
+      return indexLocalSkill(skillDir, {
+        parseFrontmatter: parseFrontmatterAdapter,
+      })
+    } catch (error) {
+      // If we can't read the directory, skip it (parity with pre-refactor).
+      console.warn(
+        '[LocalIndexer] Failed to read skill directory:',
+        skillDir,
+        error instanceof Error ? error.message : String(error)
+      )
+      return null
+    }
+  }
+
+  /**
+   * Internal method that performs the actual indexing.
+   * Called by both index() and indexSync() to avoid code duplication.
+   *
+   * @param force - Force re-index even if cache is valid
+   * @returns Array of LocalSkill objects
+   * @see SMI-1834: Refactor to reduce code duplication
+   */
+  private _performIndex(force: boolean): LocalSkill[] {
+    // Check cache
+    const now = Date.now()
+    if (!force && this.cachedSkills && now - this.lastIndexTime < this.cacheTtl) {
+      return this.cachedSkills
+    }
+
+    // Check if directory exists
+    if (!fs.existsSync(this.skillsDir)) {
+      this.cachedSkills = []
+      this.lastIndexTime = now
+      return []
+    }
+
+    const skills: LocalSkill[] = []
+
+    try {
+      const entries = fs.readdirSync(this.skillsDir, { withFileTypes: true })
+
+      for (const entry of entries) {
+        // Skip non-directories and hidden directories
+        if (!entry.isDirectory() || entry.name.startsWith('.')) {
+          continue
+        }
+
+        const skillDir = path.join(this.skillsDir, entry.name)
+        const skill = this.indexSkillDir(skillDir, entry.name)
+
+        if (skill) {
+          skills.push(skill)
+        }
+      }
+    } catch (error) {
+      console.warn(
+        '[LocalIndexer] Failed to read skills directory:',
+        this.skillsDir,
+        error instanceof Error ? error.message : String(error)
+      )
+    }
+
+    // Sort by name for consistent ordering
+    skills.sort((a, b) => a.name.localeCompare(b.name))
+
+    // Update cache
+    this.cachedSkills = skills
+    this.lastIndexTime = now
+
+    return skills
+  }
+
+  /**
+   * Index all skills in the skills directory.
+   *
+   * Scans ~/.claude/skills/ for subdirectories, parses SKILL.md files,
+   * and returns an array of LocalSkill objects.
+   *
+   * @param force - Force re-index even if cache is valid
+   * @returns Promise resolving to array of LocalSkill objects
+   */
+  async index(force: boolean = false): Promise<LocalSkill[]> {
+    return this._performIndex(force)
+  }
+
+  /**
+   * Synchronous version of index for use in non-async contexts.
+   *
+   * @param force - Force re-index even if cache is valid
+   * @returns Array of LocalSkill objects
+   */
+  indexSync(force: boolean = false): LocalSkill[] {
+    return this._performIndex(force)
+  }
+
+  /**
+   * Clear the internal cache.
+   * Forces re-indexing on next call to index().
+   */
+  clearCache(): void {
+    this.cachedSkills = null
+    this.lastIndexTime = 0
+  }
+
+  /**
+   * Get the skills directory path.
+   */
+  getSkillsDir(): string {
+    return this.skillsDir
+  }
+
+  /**
+   * Search local skills by query.
+   *
+   * Performs case-insensitive search across name, description, and tags.
+   *
+   * @param query - Search query string
+   * @param skills - Array of skills to search (optional, uses cached if not provided)
+   * @returns Filtered array of matching skills
+   */
+  search(query: string, skills?: LocalSkill[]): LocalSkill[] {
+    const skillsToSearch = skills || this.cachedSkills || []
+    const lowerQuery = query.toLowerCase()
+
+    return skillsToSearch.filter((skill) => {
+      // Search in name
+      if (skill.name.toLowerCase().includes(lowerQuery)) {
+        return true
+      }
+
+      // Search in description
+      if (skill.description?.toLowerCase().includes(lowerQuery)) {
+        return true
+      }
+
+      // Search in tags
+      if (skill.tags.some((tag) => tag.toLowerCase().includes(lowerQuery))) {
+        return true
+      }
+
+      // Search in author
+      if (skill.author.toLowerCase().includes(lowerQuery)) {
+        return true
+      }
+
+      return false
+    })
+  }
+}
+
+/**
+ * Adapter that bridges the MCP-side richer `parseFrontmatter` (returns
+ * `SkillFrontmatter` with `triggers`/`homepage`/`version`) to the narrower
+ * `IndexLocalSkillFrontmatter` shape consumed by the core helper. The two
+ * shapes share fields by name; the adapter just narrows the surface so the
+ * indexer's behaviour stays bit-identical to pre-refactor.
+ */
+function parseFrontmatterAdapter(content: string): {
+  name: string | null
+  description: string | null
+  author: string | null
+  tags: string[]
+  version: string | null
+  repository: string | null
+  homepage: string | null
+  compatibility: string[]
+} {
+  const fm: SkillFrontmatter = parseFrontmatter(content)
+  return {
+    name: fm.name,
+    description: fm.description,
+    author: fm.author,
+    tags: fm.tags,
+    version: fm.version,
+    repository: fm.repository,
+    homepage: fm.homepage,
+    compatibility: fm.compatibility,
+  }
+}
+
+// Export singleton instance for convenience
+let defaultIndexer: LocalIndexer | null = null
+
+/**
+ * Get the default LocalIndexer instance.
+ * Creates one if it doesn't exist.
+ */
+export function getLocalIndexer(): LocalIndexer {
+  if (!defaultIndexer) {
+    defaultIndexer = new LocalIndexer()
+  }
+  return defaultIndexer
+}
+
+/**
+ * Reset the default LocalIndexer instance (for testing).
+ */
+export function resetLocalIndexer(): void {
+  defaultIndexer = null
+}

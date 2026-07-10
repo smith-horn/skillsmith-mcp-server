@@ -1,0 +1,129 @@
+/**
+ * @fileoverview skill_rescan MCP tool -- re-scan installed skills with current
+ * SecurityScanner patterns.
+ * @module @skillsmith/mcp-server/tools/skill-rescan
+ * @see SMI-3511: GAP-08 No re-scanning of installed skills
+ *
+ * When new detection patterns are added (SSRF, split-word, homoglyph, etc.),
+ * already-installed skills are never re-evaluated. This tool fills that gap
+ * by reading installed SKILL.md files and running SecurityScanner against each.
+ */
+import { z } from 'zod';
+import { QuarantineRepository, type QuarantineSeverity } from '@skillsmith/core';
+/**
+ * Input schema for skill_rescan tool
+ */
+export declare const skillRescanInputSchema: z.ZodObject<{
+    /** Optional skill name filter -- rescan only the named skill */
+    skillName: z.ZodOptional<z.ZodString>;
+}, "strip", z.ZodTypeAny, {
+    skillName?: string | undefined;
+}, {
+    skillName?: string | undefined;
+}>;
+export type SkillRescanInput = z.infer<typeof skillRescanInputSchema>;
+/**
+ * Per-skill rescan result
+ */
+export interface SkillRescanEntry {
+    /** Skill directory name (e.g. "author/skill-name" or "skill-name") */
+    skill: string;
+    /**
+     * Whether the scan passed. Reflects the SKILL.md gate (no high/critical
+     * findings, risk below threshold) AND the absence of any sibling execution
+     * threat (code_execution/obfuscated_directive). Non-execution sibling findings
+     * do NOT flip this (SMI-5422 Phase 2 FP-safety).
+     */
+    passed: boolean;
+    /** Number of findings */
+    findingCount: number;
+    /** Risk score from 0-100 */
+    riskScore: number;
+    /** Summary of findings by severity */
+    severityCounts: {
+        critical: number;
+        high: number;
+        medium: number;
+        low: number;
+    };
+    /** Top findings (max 5 per skill to keep output manageable) */
+    topFindings: Array<{
+        type: string;
+        severity: string;
+        message: string;
+        lineNumber?: number;
+        /** Relative sibling path when the finding came from a bundled sibling (SMI-5422 Phase 2). */
+        location?: string;
+    }>;
+    /**
+     * SMI-5422 Phase 2: bundled-sibling scan summary. Present only when the skill
+     * has scannable siblings or any were dropped/skipped. Surfaces dropped/skipped
+     * files so a count/size cap is never a silent omission (CLAUDE.md no-silent-cap).
+     */
+    bundledSiblings?: {
+        scannedFiles: string[];
+        rejectableFiles: string[];
+        droppedForCount: string[];
+        skippedOversize: string[];
+        skippedSymlinkEscape: string[];
+    };
+    /** Error message if skill could not be read */
+    error?: string;
+}
+/**
+ * Response from skill_rescan tool
+ */
+export interface SkillRescanResponse {
+    /** Number of skills scanned */
+    scannedCount: number;
+    /** Number of skills that failed the scan */
+    failedCount: number;
+    /** Per-skill results */
+    results: SkillRescanEntry[];
+    /** Error message when a specific skill is not found */
+    error?: string;
+}
+/**
+ * MCP tool definition for skill_rescan
+ */
+export declare const skillRescanToolSchema: {
+    name: "skill_rescan";
+    description: string;
+    inputSchema: {
+        type: "object";
+        properties: {
+            skillName: {
+                type: string;
+                description: string;
+            };
+        };
+        required: never[];
+    };
+};
+/**
+ * Map SecurityScanner finding severity counts to a QuarantineSeverity.
+ *
+ * Critical findings → MALICIOUS (permanent quarantine, confirmed threat)
+ * High findings (no critical) → SUSPICIOUS (manual review required)
+ * Risk score >= threshold only → RISKY (import with warnings)
+ *
+ * @see SMI-5358: advisory → quarantine linkage for rescan
+ */
+export declare function findingsToQuarantineSeverity(hasCritical: boolean, hasHigh: boolean): QuarantineSeverity;
+/**
+ * Discover installed skill directories under ~/.claude/skills/.
+ *
+ * Skills are installed as either:
+ *   - ~/.claude/skills/{skillName}/SKILL.md
+ *   - ~/.claude/skills/{author}/{skillName}/SKILL.md
+ *
+ * Returns an array of { name, skillMdPath } objects.
+ */
+export declare function discoverInstalledSkills(skillsDir: string): Promise<Array<{
+    name: string;
+    skillMdPath: string;
+}>>;
+export declare const executeSkillRescan: (input: {
+    skillName?: string | undefined;
+}, overrideDir?: string | undefined, quarantineRepo?: QuarantineRepository | undefined) => Promise<SkillRescanResponse>;
+//# sourceMappingURL=skill-rescan.d.ts.map

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.smith-horn/skillsmith",
+  "title": "Skillsmith",
+  "description": "Discover, install, and manage agent skills via MCP — 14,000+ curated skills for any MCP-compatible agent (Claude Code, Cursor, Copilot, Codex, Windsurf).",
+  "websiteUrl": "https://skillsmith.app",
+  "repository": {
+    "url": "https://github.com/smith-horn/skillsmith",
+    "source": "github"
+  },
+  "version": "0.7.0",
+  "_meta": {
+    "io.skillsmith/categories": ["developer-tools", "ai-agents", "skill-management"],
+    "io.skillsmith/keywords": [
+      "claude-code",
+      "agent-skills",
+      "skill-discovery",
+      "autonomous-agents",
+      "openclaw"
+    ]
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@skillsmith/mcp-server",
+      "version": "0.7.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "runtime": {
+        "type": "node",
+        "minVersion": "22.0.0"
+      }
+    }
+  ]
+}

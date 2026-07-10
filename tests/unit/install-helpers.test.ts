@@ -1,0 +1,466 @@
+/**
+ * @fileoverview Tests for install.helpers.ts functions
+ * @module @skillsmith/mcp-server/tests/unit/install-helpers
+ *
+ * SMI-1721: Comprehensive tests to improve coverage from 36% to 80%+
+ *
+ * Registry-lookup + GitHub-fetch coverage split out to
+ * install-helpers.registry.test.ts (SMI-5582) to stay under the
+ * 500-line/file cap.
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import * as fs from 'fs/promises'
+import type { Stats } from 'fs'
+import {
+  parseSkillId,
+  parseRepoUrl,
+  validateSkillMd,
+  generateTips,
+  acquireManifestLock,
+  releaseManifestLock,
+  loadManifest,
+  saveManifest,
+  updateManifestSafely,
+  assertNotEncrypted,
+} from '../../src/tools/install.helpers.js'
+
+// Mock fs module
+vi.mock('fs/promises')
+
+describe('install.helpers', () => {
+  describe('parseSkillId', () => {
+    it('parses full GitHub URL', () => {
+      const result = parseSkillId('https://github.com/owner/repo')
+      expect(result).toEqual({
+        owner: 'owner',
+        repo: 'repo',
+        path: '',
+        isRegistryId: false,
+      })
+    })
+
+    it('parses GitHub URL with path', () => {
+      const result = parseSkillId('https://github.com/owner/repo/tree/main/skills/my-skill')
+      expect(result).toEqual({
+        owner: 'owner',
+        repo: 'repo',
+        path: 'tree/main/skills/my-skill',
+        isRegistryId: false,
+      })
+    })
+
+    it('parses 2-part registry ID', () => {
+      const result = parseSkillId('author/skill-name')
+      expect(result).toEqual({
+        owner: 'author',
+        repo: 'skill-name',
+        path: '',
+        isRegistryId: true,
+      })
+    })
+
+    it('parses 3-part direct reference', () => {
+      const result = parseSkillId('owner/repo/skills/my-skill')
+      expect(result).toEqual({
+        owner: 'owner',
+        repo: 'repo',
+        path: 'skills/my-skill',
+        isRegistryId: false,
+      })
+    })
+
+    it('throws for invalid format', () => {
+      expect(() => parseSkillId('invalid')).toThrow('Invalid skill ID format')
+    })
+
+    // SMI-2722: UUID skill IDs returned by the search tool must be accepted
+    it('returns isRegistryId: true for UUID skill IDs', () => {
+      const result = parseSkillId('a129e127-a82c-47e5-8bc5-09d7ba2e8734')
+      expect(result).toEqual({
+        owner: '',
+        repo: '',
+        path: '',
+        isRegistryId: true,
+      })
+    })
+
+    it('accepts UUID regardless of hex case', () => {
+      const result = parseSkillId('A129E127-A82C-47E5-8BC5-09D7BA2E8734')
+      expect(result).toEqual({
+        owner: '',
+        repo: '',
+        path: '',
+        isRegistryId: true,
+      })
+    })
+
+    it('does not match partial UUID-like strings as registry IDs', () => {
+      // Short hyphenated strings (e.g., slug-based IDs) must not be confused with UUIDs
+      // UUID regex requires exact 8-4-4-4-12 hex structure
+      expect(() => parseSkillId('abc-def-ghi')).toThrow('Invalid skill ID format')
+    })
+  })
+
+  describe('parseRepoUrl', () => {
+    it('parses simple GitHub URL', () => {
+      const result = parseRepoUrl('https://github.com/owner/repo')
+      expect(result).toEqual({
+        owner: 'owner',
+        repo: 'repo',
+        path: '',
+        branch: 'main',
+      })
+    })
+
+    it('parses GitHub URL with tree path', () => {
+      const result = parseRepoUrl('https://github.com/owner/repo/tree/develop/src/skills')
+      expect(result).toEqual({
+        owner: 'owner',
+        repo: 'repo',
+        path: 'src/skills',
+        branch: 'develop',
+      })
+    })
+
+    it('parses GitHub URL with blob path', () => {
+      const result = parseRepoUrl('https://github.com/owner/repo/blob/feature/path/file.md')
+      expect(result).toEqual({
+        owner: 'owner',
+        repo: 'repo',
+        path: 'path/file.md',
+        branch: 'feature',
+      })
+    })
+
+    it('rejects non-GitHub hosts', () => {
+      expect(() => parseRepoUrl('https://gitlab.com/owner/repo')).toThrow('Invalid repository host')
+    })
+
+    it('rejects malicious hosts', () => {
+      expect(() => parseRepoUrl('https://evil.com/owner/repo')).toThrow('Invalid repository host')
+    })
+
+    it('accepts www.github.com', () => {
+      const result = parseRepoUrl('https://www.github.com/owner/repo')
+      expect(result.owner).toBe('owner')
+      expect(result.repo).toBe('repo')
+    })
+  })
+
+  describe('validateSkillMd', () => {
+    it('validates valid SKILL.md', () => {
+      const content = `# My Skill
+
+This is a skill that does something useful. It has enough content to pass validation.
+
+## Usage
+Use this skill to do things.
+`
+      const result = validateSkillMd(content)
+      expect(result.valid).toBe(true)
+      expect(result.errors).toEqual([])
+    })
+
+    it('rejects missing title', () => {
+      const content =
+        'This is content without a heading. It is long enough but has no title marker.'
+      const result = validateSkillMd(content)
+      expect(result.valid).toBe(false)
+      expect(result.errors).toContain('Missing title (# heading)')
+    })
+
+    it('rejects too short content', () => {
+      const content = '# Title\n\nToo short.'
+      const result = validateSkillMd(content)
+      expect(result.valid).toBe(false)
+      expect(result.errors).toContain('SKILL.md is too short (minimum 100 characters)')
+    })
+
+    it('collects multiple errors', () => {
+      const content = 'No title, too short'
+      const result = validateSkillMd(content)
+      expect(result.valid).toBe(false)
+      expect(result.errors.length).toBe(2)
+    })
+  })
+
+  describe('generateTips', () => {
+    it('generates tips with skill name', () => {
+      const tips = generateTips('my-skill')
+      expect(tips).toHaveLength(4)
+      expect(tips[0]).toContain('my-skill')
+      expect(tips[0]).toContain('installed successfully')
+    })
+
+    it('includes usage instructions', () => {
+      const tips = generateTips('test-skill')
+      expect(tips.some((t) => t.includes('Use the test-skill skill'))).toBe(true)
+    })
+
+    it('includes ls command', () => {
+      const tips = generateTips('any-skill')
+      expect(tips.some((t) => t.includes('ls ~/.claude/skills/'))).toBe(true)
+    })
+
+    it('includes uninstall hint', () => {
+      const tips = generateTips('any-skill')
+      expect(tips.some((t) => t.includes('uninstall_skill'))).toBe(true)
+    })
+  })
+
+  // ============================================================================
+  // SMI-1721: New tests for async/file system functions
+  // ============================================================================
+
+  describe('acquireManifestLock', () => {
+    const mockWriteFile = vi.mocked(fs.writeFile)
+    const mockStat = vi.mocked(fs.stat)
+    const mockUnlink = vi.mocked(fs.unlink)
+
+    beforeEach(() => {
+      vi.clearAllMocks()
+    })
+
+    it('acquires lock successfully on first try', async () => {
+      mockWriteFile.mockResolvedValueOnce(undefined)
+
+      await expect(acquireManifestLock()).resolves.toBeUndefined()
+      expect(mockWriteFile).toHaveBeenCalledWith(
+        expect.stringContaining('manifest.json.lock'),
+        expect.any(String),
+        { flag: 'wx' }
+      )
+    })
+
+    it('retries when lock exists and eventually succeeds', async () => {
+      // First call fails with EEXIST, second succeeds
+      const existsError = new Error('EEXIST') as NodeJS.ErrnoException
+      existsError.code = 'EEXIST'
+
+      mockWriteFile.mockRejectedValueOnce(existsError).mockResolvedValueOnce(undefined)
+
+      // Mock stat to show lock is NOT stale (recent)
+      mockStat.mockResolvedValueOnce({
+        mtimeMs: Date.now() - 1000, // 1 second old
+      } as Stats)
+
+      await expect(acquireManifestLock()).resolves.toBeUndefined()
+      expect(mockWriteFile).toHaveBeenCalledTimes(2)
+    })
+
+    it('removes stale lock and acquires', async () => {
+      const existsError = new Error('EEXIST') as NodeJS.ErrnoException
+      existsError.code = 'EEXIST'
+
+      mockWriteFile.mockRejectedValueOnce(existsError).mockResolvedValueOnce(undefined)
+
+      // Mock stat to show lock is stale (old)
+      mockStat.mockResolvedValueOnce({
+        mtimeMs: Date.now() - 60000, // 60 seconds old (stale)
+      } as Stats)
+
+      mockUnlink.mockResolvedValueOnce(undefined)
+
+      await expect(acquireManifestLock()).resolves.toBeUndefined()
+      expect(mockUnlink).toHaveBeenCalled()
+    })
+
+    it('throws non-EEXIST errors immediately', async () => {
+      const permError = new Error('EACCES') as NodeJS.ErrnoException
+      permError.code = 'EACCES'
+
+      mockWriteFile.mockRejectedValueOnce(permError)
+
+      await expect(acquireManifestLock()).rejects.toThrow('EACCES')
+    })
+  })
+
+  describe('releaseManifestLock', () => {
+    const mockUnlink = vi.mocked(fs.unlink)
+
+    beforeEach(() => {
+      vi.clearAllMocks()
+    })
+
+    it('releases lock successfully', async () => {
+      mockUnlink.mockResolvedValueOnce(undefined)
+
+      await expect(releaseManifestLock()).resolves.toBeUndefined()
+      expect(mockUnlink).toHaveBeenCalledWith(expect.stringContaining('manifest.json.lock'))
+    })
+
+    it('ignores errors when lock already released', async () => {
+      mockUnlink.mockRejectedValueOnce(new Error('ENOENT'))
+
+      // Should not throw
+      await expect(releaseManifestLock()).resolves.toBeUndefined()
+    })
+  })
+
+  describe('loadManifest', () => {
+    const mockReadFile = vi.mocked(fs.readFile)
+
+    beforeEach(() => {
+      vi.clearAllMocks()
+    })
+
+    it('loads existing manifest', async () => {
+      const manifest = {
+        version: '1.0.0',
+        installedSkills: {
+          'test/skill': {
+            id: 'test/skill',
+            name: 'test-skill',
+            version: '1.0.0',
+            source: 'github',
+            installPath: '/path/to/skill',
+            installedAt: '2024-01-01',
+            lastUpdated: '2024-01-01',
+          },
+        },
+      }
+
+      mockReadFile.mockResolvedValueOnce(JSON.stringify(manifest))
+
+      const result = await loadManifest()
+      expect(result).toEqual(manifest)
+    })
+
+    it('returns empty manifest when file does not exist', async () => {
+      mockReadFile.mockRejectedValueOnce(new Error('ENOENT'))
+
+      const result = await loadManifest()
+      expect(result).toEqual({
+        version: '1.0.0',
+        installedSkills: {},
+      })
+    })
+
+    it('returns empty manifest on parse error', async () => {
+      mockReadFile.mockResolvedValueOnce('invalid json {{{')
+
+      const result = await loadManifest()
+      expect(result).toEqual({
+        version: '1.0.0',
+        installedSkills: {},
+      })
+    })
+  })
+
+  describe('saveManifest', () => {
+    const mockMkdir = vi.mocked(fs.mkdir)
+    const mockWriteFile = vi.mocked(fs.writeFile)
+    const mockRename = vi.mocked(fs.rename)
+
+    beforeEach(() => {
+      vi.clearAllMocks()
+    })
+
+    it('saves manifest with atomic write', async () => {
+      mockMkdir.mockResolvedValueOnce(undefined)
+      mockWriteFile.mockResolvedValueOnce(undefined)
+      mockRename.mockResolvedValueOnce(undefined)
+
+      const manifest = {
+        version: '1.0.0',
+        installedSkills: {},
+      }
+
+      await saveManifest(manifest)
+
+      expect(mockMkdir).toHaveBeenCalledWith(expect.any(String), { recursive: true })
+      expect(mockWriteFile).toHaveBeenCalledWith(
+        expect.stringContaining('.tmp.'),
+        JSON.stringify(manifest, null, 2)
+      )
+      expect(mockRename).toHaveBeenCalled()
+    })
+  })
+
+  describe('updateManifestSafely', () => {
+    const mockWriteFile = vi.mocked(fs.writeFile)
+    const mockReadFile = vi.mocked(fs.readFile)
+    const mockMkdir = vi.mocked(fs.mkdir)
+    const mockRename = vi.mocked(fs.rename)
+    const mockUnlink = vi.mocked(fs.unlink)
+
+    beforeEach(() => {
+      vi.clearAllMocks()
+    })
+
+    it('acquires lock, updates, and releases lock', async () => {
+      // Mock lock acquisition
+      mockWriteFile.mockResolvedValue(undefined)
+      // Mock load
+      mockReadFile.mockResolvedValueOnce(
+        JSON.stringify({
+          version: '1.0.0',
+          installedSkills: {},
+        })
+      )
+      // Mock save
+      mockMkdir.mockResolvedValueOnce(undefined)
+      mockRename.mockResolvedValueOnce(undefined)
+      // Mock release
+      mockUnlink.mockResolvedValueOnce(undefined)
+
+      const updateFn = vi.fn((m) => ({
+        ...m,
+        installedSkills: { 'new/skill': { id: 'new/skill' } },
+      }))
+
+      await updateManifestSafely(updateFn)
+
+      expect(updateFn).toHaveBeenCalled()
+      expect(mockUnlink).toHaveBeenCalled() // Lock released
+    })
+
+    it('releases lock even on error', async () => {
+      // Mock lock acquisition
+      mockWriteFile.mockResolvedValue(undefined)
+      // Mock load - throw error
+      mockReadFile.mockRejectedValueOnce(new Error('Read error'))
+      // Mock release
+      mockUnlink.mockResolvedValueOnce(undefined)
+
+      const updateFn = vi.fn()
+
+      // loadManifest catches errors and returns empty manifest
+      // so this should still succeed
+      await expect(updateManifestSafely(updateFn)).resolves.toBeUndefined()
+    })
+  })
+
+  // ==========================================================================
+  // SMI-3221: git-crypt encrypted content detection
+  // ==========================================================================
+
+  describe('assertNotEncrypted', () => {
+    it('does not throw for normal markdown content', () => {
+      expect(() => assertNotEncrypted('# My Skill\n\nThis is a skill.', 'SKILL.md')).not.toThrow()
+    })
+
+    it('does not throw for empty content', () => {
+      expect(() => assertNotEncrypted('', 'SKILL.md')).not.toThrow()
+    })
+
+    it('throws for git-crypt encrypted content', () => {
+      // git-crypt magic header: \x00GITCRYPT followed by encrypted bytes
+      const encrypted = '\x00GITCRYPT\x00\x12\x34\x56'
+      expect(() => assertNotEncrypted(encrypted, 'SKILL.md')).toThrow('git-crypt encrypted')
+    })
+
+    it('includes file path in error message', () => {
+      const encrypted = '\x00GITCRYPT\x00'
+      expect(() => assertNotEncrypted(encrypted, '.claude/skills/my-skill/SKILL.md')).toThrow(
+        '.claude/skills/my-skill/SKILL.md'
+      )
+    })
+
+    it('includes cp -r workaround in error message', () => {
+      const encrypted = '\x00GITCRYPT\x00'
+      expect(() => assertNotEncrypted(encrypted, 'SKILL.md')).toThrow('cp -r')
+    })
+  })
+})

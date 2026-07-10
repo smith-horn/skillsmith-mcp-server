@@ -1,0 +1,186 @@
+/**
+ * @fileoverview Recommend Tool Types and Schemas
+ * @module @skillsmith/mcp-server/tools/recommend.types
+ */
+import { z } from 'zod';
+import { type MCPTrustTier as TrustTier, type SkillRole } from '@skillsmith/core';
+/**
+ * SMI-1631: Type-safe Zod schema for skill roles
+ */
+export declare const skillRoleSchema: z.ZodEnum<["code-quality", "testing", "documentation", "workflow", "security", "development-partner"]>;
+/**
+ * Zod schema for recommend tool input validation
+ */
+export declare const recommendInputSchema: z.ZodObject<{
+    /** Currently installed skill IDs */
+    installed_skills: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
+    /** Optional project description for context-aware recommendations */
+    project_context: z.ZodOptional<z.ZodString>;
+    /** Maximum recommendations to return (default 5) */
+    limit: z.ZodDefault<z.ZodNumber>;
+    /** Enable overlap detection (default true) */
+    detect_overlap: z.ZodDefault<z.ZodBoolean>;
+    /** Minimum similarity threshold (0-1, default 0.3) */
+    min_similarity: z.ZodDefault<z.ZodNumber>;
+    /** SMI-1631: Filter by skill role for targeted recommendations */
+    role: z.ZodOptional<z.ZodEnum<["code-quality", "testing", "documentation", "workflow", "security", "development-partner"]>>;
+    /**
+     * SMI-5178: When true (default), return only installable skills.
+     * Pass false to include discovery-only entries that cannot be installed.
+     */
+    installable_only: z.ZodDefault<z.ZodBoolean>;
+}, "strip", z.ZodTypeAny, {
+    limit: number;
+    installed_skills: string[];
+    detect_overlap: boolean;
+    min_similarity: number;
+    installable_only: boolean;
+    project_context?: string | undefined;
+    role?: "testing" | "documentation" | "security" | "workflow" | "code-quality" | "development-partner" | undefined;
+}, {
+    limit?: number | undefined;
+    installed_skills?: string[] | undefined;
+    project_context?: string | undefined;
+    detect_overlap?: boolean | undefined;
+    min_similarity?: number | undefined;
+    role?: "testing" | "documentation" | "security" | "workflow" | "code-quality" | "development-partner" | undefined;
+    installable_only?: boolean | undefined;
+}>;
+/**
+ * Input type (before parsing, allows optional fields)
+ */
+export type RecommendInput = z.input<typeof recommendInputSchema>;
+/**
+ * Individual skill recommendation with reasoning
+ */
+export interface SkillRecommendation {
+    /** Skill identifier */
+    skill_id: string;
+    /** Skill name */
+    name: string;
+    /** Why this skill is recommended */
+    reason: string;
+    /** Semantic similarity score (0-1) */
+    similarity_score: number;
+    /** Trust tier for user confidence */
+    trust_tier: TrustTier;
+    /** Overall quality score */
+    quality_score: number;
+    /** SMI-1631: Skill roles for role-based filtering */
+    roles?: SkillRole[];
+    /**
+     * SMI-5178: Whether the skill can be installed.
+     * False for discovery-only entries (no repo_url); absent means unknown/assumed installable.
+     */
+    installable?: boolean;
+}
+/**
+ * Recommendation response with timing info
+ */
+export interface RecommendResponse {
+    /** List of recommended skills */
+    recommendations: SkillRecommendation[];
+    /** Total candidates considered */
+    candidates_considered: number;
+    /** Skills filtered due to overlap */
+    overlap_filtered: number;
+    /** SMI-1631: Skills filtered due to role mismatch */
+    role_filtered: number;
+    /**
+     * SMI-5178: Discovery-only entries hidden by the default-ON installable filter.
+     * Pass installable_only: false to include them.
+     */
+    discovery_only_hidden?: number;
+    /** Query context used for matching */
+    context: {
+        installed_count: number;
+        has_project_context: boolean;
+        using_semantic_matching: boolean;
+        /** SMI-906: Whether installed skills were auto-detected from ~/.claude/skills/ */
+        auto_detected: boolean;
+        /** SMI-1631: Role filter applied */
+        role_filter?: SkillRole;
+    };
+    /** Performance timing */
+    timing: {
+        totalMs: number;
+    };
+}
+/**
+ * MCP tool schema definition for skill_recommend
+ */
+export declare const recommendToolSchema: {
+    name: string;
+    description: string;
+    inputSchema: {
+        type: "object";
+        properties: {
+            installed_skills: {
+                type: string;
+                items: {
+                    type: string;
+                };
+                description: string;
+            };
+            project_context: {
+                type: string;
+                description: string;
+            };
+            limit: {
+                type: string;
+                description: string;
+                minimum: number;
+                maximum: number;
+                default: number;
+            };
+            detect_overlap: {
+                type: string;
+                description: string;
+                default: boolean;
+            };
+            min_similarity: {
+                type: string;
+                description: string;
+                minimum: number;
+                maximum: number;
+                default: number;
+            };
+            role: {
+                type: string;
+                enum: SkillRole[];
+                description: string;
+            };
+            installable_only: {
+                type: string;
+                description: string;
+                default: boolean;
+            };
+        };
+        required: never[];
+    };
+};
+/**
+ * Skill data format for matching operations
+ * Transformed from database Skill records
+ */
+export interface SkillData {
+    /** Unique skill identifier */
+    id: string;
+    /** Skill display name */
+    name: string;
+    /** Skill description */
+    description: string;
+    /** Trigger phrases for overlap detection (derived from tags) */
+    triggerPhrases: string[];
+    /** Keywords for matching (from tags) */
+    keywords: string[];
+    /** Quality score (0-100) */
+    qualityScore: number;
+    /** Trust tier */
+    trustTier: TrustTier;
+    /** SMI-1631: Skill roles for role-based filtering */
+    roles: SkillRole[];
+    /** SMI-1632: Whether this is an installable skill (vs a collection) */
+    installable: boolean;
+}
+//# sourceMappingURL=recommend.types.d.ts.map

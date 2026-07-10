@@ -1,0 +1,81 @@
+{
+  "name": "@skillsmith/mcp-server",
+  "version": "0.7.0",
+  "mcpName": "io.github.smith-horn/skillsmith",
+  "description": "MCP server for Skillsmith skill discovery",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js",
+      "default": "./dist/src/index.js"
+    },
+    "./audit": {
+      "types": "./dist/src/audit/index.d.ts",
+      "import": "./dist/src/audit/index.js",
+      "default": "./dist/src/audit/index.js"
+    }
+  },
+  "bin": {
+    "skillsmith-mcp": "./dist/src/index.js"
+  },
+  "scripts": {
+    "prepublishOnly": "node ../../scripts/lib/forbid-local-publish.mjs && npm run build && npm run test && chmod +x dist/src/index.js",
+    "build": "tsc",
+    "postbuild": "chmod +x dist/src/index.js || true",
+    "dev": "tsx watch src/index.ts",
+    "generate:agent-pack": "tsx scripts/generate-agent-pack.ts",
+    "start": "node dist/src/index.js",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.config.integration.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@skillsmith/core": "^0.11.0",
+    "ulid": "3.0.1",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "tsx": "4.21.0",
+    "vitest": "4.1.10"
+  },
+  "files": [
+    "dist",
+    "src/assets",
+    "server.json",
+    "CHANGELOG.md"
+  ],
+  "license": "Elastic-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/smith-horn/skillsmith.git",
+    "directory": "packages/mcp-server"
+  },
+  "homepage": "https://github.com/smith-horn/skillsmith#readme",
+  "bugs": {
+    "url": "https://github.com/smith-horn/skillsmith/issues"
+  },
+  "keywords": [
+    "skillsmith",
+    "ai",
+    "skills",
+    "mcp",
+    "llm",
+    "model-context-protocol",
+    "claude-code",
+    "agent-skills",
+    "skill-discovery",
+    "skill-management",
+    "autonomous-agents",
+    "openclaw",
+    "multi-agent",
+    "tool-management"
+  ],
+  "engines": {
+    "node": ">=22.22.0"
+  }
+}

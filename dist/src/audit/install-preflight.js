@@ -1,0 +1,320 @@
+/**
+ * @fileoverview Install pre-flight namespace check (SMI-4588 Wave 2 Step 5, PR #3).
+ * @module @skillsmith/mcp-server/audit/install-preflight
+ *
+ * Detects namespace collisions between an in-flight install candidate and
+ * the user's existing local inventory BEFORE any side effects. Returns both
+ * a non-blocking `warnings[]` shape (for `power_user` / `governance` modes)
+ * AND a blocking `pendingCollision` envelope (for `preventative` mode). The
+ * mode gate lives in the install.ts caller — this module is pure detection
+ * + suggestion generation + audit-history persistence.
+ *
+ * Plan §3 + §Step 5 + Edits 2/3/6/7.
+ *
+ * Inventory contract (Edit 7):
+ *   - `existingInventory` — pre-candidate snapshot, passed to
+ *     `generateSuggestionChain` (chain self-collides at tier 1 otherwise).
+ *   - `augmentedInventory` — existing + the synthesized candidate, passed to
+ *     `detectCollisions`. Filtering to flags involving the candidate keeps
+ *     pre-existing collisions from re-surfacing on every install.
+ *
+ * Failure model (Edit 2):
+ *   - Pre-flight scanner failure (ledger malformed unrecoverably, fs error,
+ *     unexpected throw) is ALWAYS non-blocking. The caller treats `warnings:
+ *     [], pendingCollision: null` as a degraded-but-clean pass and proceeds
+ *     with the install.
+ *
+ * Edit 6 — `readLedger()` may throw `namespace.ledger.version_unsupported`.
+ * The pre-flight catches it and degrades to non-blocking; bubbling would
+ * brick installs after a ledger downgrade.
+ */
+import { detectCollisions } from './collision-detector.js';
+import { newAuditId, writeAuditHistory } from './audit-history.js';
+import { generateSuggestionChain } from './suggestion-chain.js';
+import { runEditSuggester } from './edit-suggester.js';
+/**
+ * Synthesize an `InventoryEntry` for the candidate skill. Mirrors the
+ * shape `scanLocalInventory` produces for `~/.claude/skills/*`.
+ */
+function synthesizeCandidateEntry(candidate) {
+    return {
+        kind: 'skill',
+        source_path: candidate.projectedSourcePath,
+        identifier: candidate.identifier,
+        triggerSurface: [candidate.identifier],
+        meta: {
+            author: candidate.author ?? undefined,
+            tags: candidate.tags,
+            description: candidate.description,
+        },
+    };
+}
+/**
+ * Filter detector flags to those that involve the candidate skill. The
+ * user has already accepted any pre-existing collisions; only newly
+ * introduced ones surface at install time.
+ */
+function flagInvolvesCandidate(flag, candidatePath) {
+    if (flag.kind === 'exact') {
+        return flag.entries.some((e) => e.source_path === candidatePath);
+    }
+    if (flag.kind === 'generic') {
+        return flag.entry.source_path === candidatePath;
+    }
+    // semantic
+    return flag.entryA.source_path === candidatePath || flag.entryB.source_path === candidatePath;
+}
+/**
+ * Find the inventory entry on the OTHER side of a flag — the entry the
+ * candidate collides with. Used when constructing `RenameSuggestion`
+ * shapes whose `entry` field points at the candidate (so the apply path
+ * mutates the candidate, not the existing entry).
+ */
+function candidateEntryFromFlag(flag, candidatePath) {
+    if (flag.kind === 'exact') {
+        return flag.entries.find((e) => e.source_path === candidatePath) ?? null;
+    }
+    if (flag.kind === 'generic') {
+        return flag.entry;
+    }
+    return flag.entryA.source_path === candidatePath ? flag.entryA : flag.entryB;
+}
+/**
+ * Pick the apply-action for the candidate based on its kind. The candidate
+ * is always synthesized as `kind: 'skill'`; this stays a switch so future
+ * candidate kinds (commands, agents added at install time) are supported.
+ */
+function actionForEntry(entry) {
+    switch (entry.kind) {
+        case 'command':
+            return 'rename_command_file';
+        case 'agent':
+            return 'rename_agent_file';
+        case 'skill':
+        case 'claude_md_rule':
+        default:
+            return 'rename_skill_dir_and_frontmatter';
+    }
+}
+/**
+ * Build a `RenameSuggestion` for the candidate, picking the first
+ * non-colliding chain candidate as `suggested`. Falls back to chain
+ * candidate[0] when all collide (the agent surfaces the chain via
+ * `pendingCollision.suggestionChain`).
+ */
+function buildCandidateSuggestion(args) {
+    const chain = generateSuggestionChain({
+        token: args.candidate.identifier,
+        author: args.candidate.author ?? null,
+        packDomain: args.candidate.packDomain ?? null,
+        tagFallback: args.candidate.tags?.[0] ?? null,
+        authorPath: args.candidate.projectedSourcePath,
+        existingInventory: args.existingInventory,
+    });
+    // First non-colliding candidate, or fall back to first slot when all
+    // collide (caller surfaces `chainExhausted` separately).
+    const lowercaseInventory = new Set(args.existingInventory.map((e) => e.identifier.toLowerCase()));
+    const firstFree = chain.candidates.find((c) => !lowercaseInventory.has(c.toLowerCase()));
+    const suggested = firstFree ?? chain.candidates[0] ?? args.candidate.identifier;
+    const reason = buildReason(args.flag, args.candidate.projectedSourcePath);
+    return {
+        suggestion: {
+            collisionId: args.flag.collisionId,
+            entry: args.candidateEntry,
+            currentName: args.candidate.identifier,
+            suggested,
+            applyAction: actionForEntry(args.candidateEntry),
+            reason,
+        },
+        chain: chain.candidates,
+        exhausted: chain.exhausted,
+    };
+}
+function buildReason(flag, candidatePath) {
+    if (flag.kind === 'exact') {
+        // Exclude the candidate from the rendered list so the message reads
+        // as "X collides with the existing entries", not "X collides with X
+        // and the existing entries".
+        const others = flag.entries
+            .filter((e) => e.source_path !== candidatePath)
+            .map((e) => `${e.kind}:${e.identifier}`)
+            .join(', ');
+        return `exact collision with ${others}`;
+    }
+    if (flag.kind === 'generic') {
+        return `generic-token flag (${flag.matchedTokens.join(', ')})`;
+    }
+    return `semantic overlap (cosine ${flag.cosineScore.toFixed(2)}) with ${flag.entryB.identifier}`;
+}
+/**
+ * Filter out the candidate skill's own prior on-disk presence from the
+ * inventory snapshot.
+ *
+ * On reinstall (`force: true`), `scanLocalInventory` returns an entry for
+ * the already-installed skill at `<projectedSourcePath>/SKILL.md`. If we
+ * left it in `existingInventory`, the augmented inventory would contain
+ * both the prior entry AND the synthesized candidate with the same
+ * `identifier`, and `detectExactCollisions` would surface a false-positive
+ * "namespace collision" that blocks reinstall in `preventative` mode.
+ *
+ * The reinstall flow is owned by `install.conflict.ts` (three-way merge,
+ * backup, force semantics). Pre-flight is for *new* namespace conflicts
+ * with *other* skills, not for the candidate's own prior copy.
+ */
+function excludeSelfReinstall(existing, candidate) {
+    const candidateDir = candidate.projectedSourcePath;
+    const candidateIdentifier = candidate.identifier.toLowerCase();
+    return existing.filter((entry) => {
+        if (entry.kind !== 'skill')
+            return true;
+        if (entry.identifier.toLowerCase() !== candidateIdentifier)
+            return true;
+        // Skill entries' source_path is `<dir>/SKILL.md`; match by parent dir.
+        // Also accept exact-equality for forward-compat with future synthesis
+        // shapes that may use the directory path directly.
+        if (entry.source_path === candidateDir)
+            return false;
+        if (entry.source_path.startsWith(`${candidateDir}/`))
+            return false;
+        return true;
+    });
+}
+/**
+ * Run the install pre-flight. Pure function over `existingInventory` +
+ * `candidate`; emits an audit-history entry as a side effect so the agent's
+ * later `apply_namespace_rename` call can re-derive context via `auditId`.
+ *
+ * Failure model: any unexpected throw inside this function returns the
+ * degraded shape (`warnings: []`, `pendingCollision: null`, fresh
+ * `auditId`) — the install MUST proceed when the detector breaks (Edit 2).
+ */
+export async function runInstallPreflight(input) {
+    const { existingInventory, candidate, mode, tier } = input;
+    // Allocate the audit id up front so the degraded path returns a valid
+    // ULID even when the inner detector throws before producing a result.
+    const auditId = newAuditId();
+    let inventoryWithoutSelf;
+    let augmentedInventory;
+    let result;
+    try {
+        // Exclude the candidate's own prior on-disk copy (reinstall) so the
+        // detector doesn't surface it as a namespace collision against itself.
+        inventoryWithoutSelf = excludeSelfReinstall(existingInventory, candidate);
+        const candidateEntry = synthesizeCandidateEntry(candidate);
+        augmentedInventory = [...inventoryWithoutSelf, candidateEntry];
+        result = await detectCollisions(augmentedInventory, {
+            auditId,
+            tier,
+            auditModeOverride: mode,
+        });
+    }
+    catch (err) {
+        // Edit 2: pre-flight failure is always non-blocking. Log + degrade.
+        // The catch covers `excludeSelfReinstall` (rejects non-iterable
+        // inputs), `synthesizeCandidateEntry`, the spread, AND
+        // `detectCollisions`. Any pre-flight failure → install proceeds.
+        console.warn(`[install-preflight] detector failed (${err.message}); degrading to non-blocking pass`);
+        return { warnings: [], pendingCollision: null, auditId };
+    }
+    // Filter to flags involving the candidate. Pre-existing collisions are
+    // out of scope at install time.
+    const allFlags = [
+        ...result.exactCollisions,
+        ...result.genericFlags,
+        ...result.semanticCollisions,
+    ];
+    const candidateFlags = allFlags.filter((f) => flagInvolvesCandidate(f, candidate.projectedSourcePath));
+    if (candidateFlags.length === 0) {
+        // Clean candidate. Persist the audit history (zero-flag run) so the
+        // agent's later inspection by auditId still resolves; absence of an
+        // audit file would be ambiguous.
+        await tryWriteAuditHistory(result);
+        return { warnings: [], pendingCollision: null, auditId };
+    }
+    // SMI-4589 Wave 3: run the edit-suggester over the audit result (which
+    // already contains the candidate-augmented inventory). We attach the
+    // matching edit to each semantic NamespaceWarning by collisionId. Edge
+    // cases:
+    //   - Edit-suggester throws → log + degrade to no edits (preserves the
+    //     non-blocking install contract per Wave 2 Edit 2). Failure of the
+    //     edit surface MUST NOT brick the install pre-flight.
+    //   - Non-semantic warnings (`exact`, `generic`) never carry a
+    //     recommendedEdit — the suggester only runs over semanticCollisions.
+    const editsByCollisionId = await collectRecommendedEdits(result);
+    // Build a NamespaceWarning + suggestion-chain for each candidate-related
+    // flag. We surface the first flag's chain in `pendingCollision` (the
+    // dominant collision); all flags surface in `warnings[]`.
+    const warnings = [];
+    let pendingCollision = null;
+    for (let i = 0; i < candidateFlags.length; i++) {
+        const flag = candidateFlags[i];
+        const candidateEntry = candidateEntryFromFlag(flag, candidate.projectedSourcePath);
+        if (!candidateEntry)
+            continue;
+        const built = buildCandidateSuggestion({
+            flag,
+            candidate,
+            candidateEntry,
+            // Pass the self-excluded snapshot so the chain doesn't treat the
+            // candidate's own prior install (during a force-reinstall) as a
+            // colliding entry — that would force `chainExhausted: true` on
+            // every reinstall.
+            existingInventory: inventoryWithoutSelf,
+        });
+        const recommendedEdit = editsByCollisionId.get(flag.collisionId);
+        warnings.push({
+            collisionId: flag.collisionId,
+            kind: flag.kind,
+            severity: 'warning',
+            message: buildWarningMessage(flag, candidate, built.suggestion.suggested),
+            suggestion: built.suggestion,
+            auditId,
+            recommendedEdit,
+        });
+        // First candidate-flag becomes the pendingCollision envelope.
+        if (i === 0) {
+            pendingCollision = {
+                auditId,
+                suggestedRename: built.suggestion,
+                suggestionChain: built.chain,
+                chainExhausted: built.exhausted,
+                remediationHint: "call apply_namespace_rename({ auditId, action: 'apply' }) then re-invoke install_skill",
+            };
+        }
+    }
+    await tryWriteAuditHistory(result);
+    return { warnings, pendingCollision, auditId };
+}
+function buildWarningMessage(flag, candidate, suggested) {
+    const reason = buildReason(flag, candidate.projectedSourcePath);
+    return `Namespace ${flag.kind} collision installing "${candidate.identifier}": ${reason}. Suggested rename: "${suggested}".`;
+}
+/**
+ * SMI-4589 Wave 3: collect recommended edits indexed by collisionId.
+ * Edit-suggester failure degrades silently to an empty map — the
+ * non-blocking install contract from Wave 2 Edit 2 extends here.
+ */
+async function collectRecommendedEdits(result) {
+    try {
+        const recommendedEdits = await runEditSuggester(result);
+        return new Map(recommendedEdits.map((e) => [e.collisionId, e]));
+    }
+    catch (err) {
+        console.warn(`[install-preflight] edit-suggester failed (${err.message}); proceeding without prose edits`);
+        return new Map();
+    }
+}
+/**
+ * Persist the audit history. Errors here are logged + swallowed — pre-flight
+ * is non-blocking (Edit 2), and a missing audit file degrades the agent's
+ * later `apply_namespace_rename` lookup but does not break install.
+ */
+async function tryWriteAuditHistory(result) {
+    try {
+        await writeAuditHistory(result);
+    }
+    catch (err) {
+        console.warn(`[install-preflight] writeAuditHistory failed (${err.message}); auditId will be unrecoverable but install proceeds`);
+    }
+}
+//# sourceMappingURL=install-preflight.js.map

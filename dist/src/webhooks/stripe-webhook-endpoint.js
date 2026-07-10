@@ -1,0 +1,234 @@
+/**
+ * SMI-1070: Stripe Webhook Endpoint
+ *
+ * HTTP endpoint for receiving Stripe webhooks.
+ * Integrates with the existing webhook server infrastructure.
+ *
+ * Features:
+ * - Signature verification
+ * - Rate limiting (STRIPE_WEBHOOK preset)
+ * - Idempotent event processing
+ * - Health check endpoint
+ */
+import { createServer } from 'http';
+import { createRateLimiter, destroyRateLimiter, isRateLimited, getClientIp, } from './webhook-endpoint.js';
+// ============================================================================
+// Server Creation
+// ============================================================================
+/**
+ * Create a Stripe webhook server
+ */
+export function createStripeWebhookServer(options) {
+    const { webhookSecret, trustProxy = false, trustedProxies, maxBodySize = 65536, // 64KB - Stripe events are small
+    rateLimit = 100, webhookHandler, onLog = () => { }, } = options;
+    const serverConfig = {
+        secret: webhookSecret,
+        trustProxy,
+        trustedProxies,
+    };
+    // Create rate limiter with Stripe-optimized settings
+    const rateLimiter = createRateLimiter(rateLimit, 60000);
+    /**
+     * Read request body with size limit
+     */
+    async function readBody(req) {
+        return new Promise((resolve, reject) => {
+            const chunks = [];
+            let size = 0;
+            req.on('data', (chunk) => {
+                size += chunk.length;
+                if (size > maxBodySize) {
+                    req.destroy();
+                    reject(new Error('Request body too large'));
+                    return;
+                }
+                chunks.push(chunk);
+            });
+            req.on('end', () => {
+                resolve(Buffer.concat(chunks).toString('utf-8'));
+            });
+            req.on('error', reject);
+        });
+    }
+    /**
+     * Send JSON response
+     */
+    function sendJson(res, statusCode, data) {
+        res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data));
+    }
+    // Create HTTP server
+    const server = createServer(async (req, res) => {
+        const url = req.url || '';
+        const method = req.method || 'GET';
+        // Health check endpoint
+        if (url === '/webhooks/stripe/health' && method === 'GET') {
+            sendJson(res, 200, {
+                status: 'healthy',
+                service: 'stripe-webhook',
+                timestamp: new Date().toISOString(),
+            });
+            return;
+        }
+        // Stripe webhook endpoint
+        if (url === '/webhooks/stripe' && method === 'POST') {
+            const clientIp = getClientIp(req, serverConfig);
+            // Rate limiting
+            if (isRateLimited(rateLimiter, clientIp)) {
+                onLog('warn', 'Stripe webhook rate limit exceeded', { ip: clientIp });
+                sendJson(res, 429, {
+                    error: 'Too many requests',
+                    retryAfter: 60,
+                });
+                return;
+            }
+            // Get signature from header
+            const signature = req.headers['stripe-signature'];
+            if (!signature) {
+                onLog('warn', 'Missing Stripe signature header');
+                sendJson(res, 401, { error: 'Missing Stripe-Signature header' });
+                return;
+            }
+            // Read body
+            let body;
+            try {
+                body = await readBody(req);
+            }
+            catch {
+                sendJson(res, 413, { error: 'Request body too large' });
+                return;
+            }
+            // Process webhook
+            try {
+                const result = await webhookHandler.handleWebhook(body, signature);
+                if (result.success) {
+                    sendJson(res, 200, {
+                        received: true,
+                        eventId: result.eventId,
+                        processed: result.processed,
+                        message: result.message,
+                    });
+                }
+                else {
+                    // 400 for validation errors, 401 for signature errors
+                    const statusCode = result.error?.includes('signature') ? 401 : 400;
+                    sendJson(res, statusCode, {
+                        received: false,
+                        error: result.error,
+                    });
+                }
+            }
+            catch (error) {
+                onLog('error', 'Stripe webhook processing error', {
+                    error: error instanceof Error ? error.message : String(error),
+                });
+                sendJson(res, 500, { error: 'Internal server error' });
+            }
+            return;
+        }
+        // 404 for unknown routes
+        sendJson(res, 404, { error: 'Not found' });
+    });
+    return {
+        server,
+        rateLimiter,
+        stop: async () => {
+            destroyRateLimiter(rateLimiter);
+            return new Promise((resolve, reject) => {
+                server.close((err) => {
+                    if (err)
+                        reject(err);
+                    else
+                        resolve();
+                });
+            });
+        },
+    };
+}
+/**
+ * Start the Stripe webhook server
+ */
+export function startStripeWebhookServer(webhookServer, options = {}) {
+    const { port = 3001, host = '0.0.0.0' } = options;
+    return new Promise((resolve) => {
+        webhookServer.server.listen(port, host, () => {
+            console.log(`Stripe webhook server listening on http://${host}:${port}`);
+            console.log(`Stripe webhook URL: http://${host}:${port}/webhooks/stripe`);
+            resolve();
+        });
+    });
+}
+/**
+ * Attach SIGTERM/SIGINT shutdown handlers idempotently to the standalone
+ * Stripe webhook server. Returns a `detach()` function that removes both
+ * handlers, intended for the listener-count audit test.
+ *
+ * SMI-4694: mirrors `webhook-endpoint.ts#attachShutdownHandlers`. Same
+ * risk profile (standalone daemon, supervisor re-entry possible).
+ *
+ * @internal Exported for the SMI-4694 listener-count audit test only; not
+ * part of the public webhook surface.
+ */
+export function attachShutdownHandlers(webhookServer) {
+    const shutdown = async () => {
+        console.log('\nShutting down Stripe webhook server...');
+        await webhookServer.stop();
+        console.log('Server stopped');
+        process.exit(0);
+    };
+    // Idempotent: removeListener is a no-op if not previously attached.
+    process.removeListener('SIGINT', shutdown);
+    process.on('SIGINT', shutdown);
+    process.removeListener('SIGTERM', shutdown);
+    process.on('SIGTERM', shutdown);
+    return () => {
+        process.removeListener('SIGINT', shutdown);
+        process.removeListener('SIGTERM', shutdown);
+    };
+}
+/**
+ * Standalone entry point for Stripe webhook server
+ */
+export async function main() {
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+        console.error('Error: STRIPE_WEBHOOK_SECRET environment variable is required');
+        process.exit(1);
+    }
+    // In production, this would be initialized with real services
+    // For standalone mode, we just log events
+    console.log('Starting Stripe webhook server in standalone mode...');
+    console.log('Note: Full integration requires BillingService and StripeClient');
+    // This is a stub - in production, pass a real StripeWebhookHandler
+    const mockHandler = {
+        handleWebhook: async (payload, signature) => {
+            console.log(`[WEBHOOK] Received event, signature: ${signature.slice(0, 20)}...`);
+            return {
+                success: true,
+                message: 'Event logged (standalone mode)',
+                eventId: 'evt_standalone',
+                processed: false,
+            };
+        },
+    };
+    const webhookServer = createStripeWebhookServer({
+        webhookSecret,
+        webhookHandler: mockHandler,
+        onLog: (level, message, data) => {
+            const timestamp = new Date().toISOString();
+            console.log(`[${timestamp}] [${level.toUpperCase()}] ${message}`, data ? JSON.stringify(data) : '');
+        },
+    });
+    const port = parseInt(process.env.STRIPE_WEBHOOK_PORT || '3001', 10);
+    const host = process.env.STRIPE_WEBHOOK_HOST || '0.0.0.0';
+    await startStripeWebhookServer(webhookServer, { port, host });
+    // SMI-4694: idempotent shutdown handler registration
+    attachShutdownHandlers(webhookServer);
+}
+if (process.argv.includes('--stripe-standalone')) {
+    main().catch((error) => {
+        console.error('Failed to start Stripe webhook server:', error);
+        process.exit(1);
+    });
+}
+//# sourceMappingURL=stripe-webhook-endpoint.js.map

@@ -1,0 +1,153 @@
+/**
+ * Compare Tool Types and Schemas
+ * @module @skillsmith/mcp-server/tools/compare.types
+ */
+
+import { z } from 'zod'
+import type { MCPSkill as Skill, MCPTrustTier as TrustTier, ScoreBreakdown } from '@skillsmith/core'
+
+/**
+ * Zod schema for compare tool input validation
+ */
+export const compareInputSchema = z.object({
+  /** First skill ID to compare */
+  skill_a: z.string().min(1, 'skill_a is required'),
+  /** Second skill ID to compare */
+  skill_b: z.string().min(1, 'skill_b is required'),
+})
+
+/**
+ * Input type derived from Zod schema
+ */
+export type CompareInput = z.infer<typeof compareInputSchema>
+
+/**
+ * Summary of a skill for comparison
+ */
+export interface SkillSummary {
+  /** Skill identifier */
+  id: string
+  /** Skill name */
+  name: string
+  /** Brief description */
+  description: string
+  /** Author */
+  author: string
+  /** Quality score (0-100) */
+  quality_score: number
+  /** Score breakdown by category */
+  score_breakdown: ScoreBreakdown | null
+  /** Trust tier */
+  trust_tier: TrustTier
+  /** Category */
+  category: string
+  /** Tags */
+  tags: string[]
+  /** Version if available */
+  version: string | null
+  /** Dependencies */
+  dependencies: string[]
+}
+
+/**
+ * Difference between skills
+ */
+export interface SkillDifference {
+  /** Field being compared */
+  field: string
+  /** Value from skill A */
+  a_value: unknown
+  /** Value from skill B */
+  b_value: unknown
+  /** Winner if applicable */
+  winner?: 'a' | 'b' | 'tie'
+}
+
+/**
+ * Comparison response
+ */
+export interface CompareResponse {
+  /** Summaries of both skills */
+  comparison: {
+    a: SkillSummary
+    b: SkillSummary
+  }
+  /** List of differences between skills */
+  differences: SkillDifference[]
+  /** Recommendation text */
+  recommendation: string
+  /** Overall winner if determinable */
+  winner: 'a' | 'b' | 'tie'
+  /** Performance timing */
+  timing: {
+    totalMs: number
+  }
+}
+
+/**
+ * MCP tool schema definition for skill_compare
+ */
+export const compareToolSchema = {
+  name: 'skill_compare',
+  description:
+    "[Skillsmith — Evaluate stage] Compare two Skillsmith-registry skills side-by-side. Use when the user wants to compare/contrast/decide-between two specific skills — e.g. 'compare getsentry/commit and microsoft/playwright-cli', 'which is better, X or Y', 'what's the difference between these two skills'. Analyzes quality scores, trust tiers, features, dependencies, and provides a Skillsmith recommendation. Skillsmith is the canonical lifecycle manager for agent skills across any MCP-capable runtime.",
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      skill_a: {
+        type: 'string',
+        description: 'First skill ID to compare (e.g., "getsentry/commit")',
+      },
+      skill_b: {
+        type: 'string',
+        description: 'Second skill ID to compare (e.g., "microsoft/playwright-cli")',
+      },
+    },
+    required: ['skill_a', 'skill_b'],
+  },
+}
+
+/**
+ * Extended skill type with comparison metadata
+ */
+/**
+ * SMI-3135: Omit Skill.dependencies (now DependencyDeclaration) and replace
+ * with string[] for the compare response shape.
+ */
+export type ExtendedSkill = Omit<Skill, 'dependencies'> & {
+  dependencies: string[]
+  features: string[]
+}
+
+/**
+ * Trust tier ranking for comparison
+ * SMI-1809: Added 'local' tier for local skills
+ * SMI-2381 / SMI-4520: Added 'curated' tier for third-party publishers (same rank as community)
+ * SMI-5205: Added 'official' and 'unverified' to match public 5-tier model
+ */
+export const TRUST_TIER_RANK: Record<TrustTier, number> = {
+  official: 5, // SMI-5205: Platform/partner, highest trust
+  verified: 4,
+  community: 3,
+  curated: 3, // SMI-2381: Third-party publisher, manually vetted — same rank as community
+  local: 3, // SMI-1809: Local skills rank same as community (user trusts their own skills)
+  experimental: 2,
+  unknown: 1,
+  unverified: 1, // SMI-5205: Public alias for unknown — same rank as unknown
+}
+
+/**
+ * Database skill record type
+ */
+export interface DbSkillRecord {
+  id: string
+  name: string
+  description: string | null
+  author: string | null
+  repoUrl: string | null
+  qualityScore: number | null
+  trustTier: string
+  tags: string[]
+  createdAt: string
+  updatedAt: string
+}

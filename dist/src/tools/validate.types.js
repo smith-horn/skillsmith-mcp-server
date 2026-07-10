@@ -1,0 +1,80 @@
+/**
+ * Validate Tool Types and Schemas
+ * @module @skillsmith/mcp-server/tools/validate.types
+ */
+import { z } from 'zod';
+/**
+ * Zod schema for validate tool input
+ */
+export const validateInputSchema = z.object({
+    /** Path to SKILL.md file or skill directory */
+    skill_path: z.string().min(1, 'skill_path is required'),
+    /** Enable strict validation (default false) */
+    strict: z.boolean().default(false),
+});
+/**
+ * MCP tool schema definition for skill_validate
+ */
+export const validateToolSchema = {
+    name: 'skill_validate',
+    description: "[Skillsmith — Install stage] Validate a SKILL.md file or skill directory against the Skillsmith specification before installing or publishing. Use when the user wants to check/validate a skill's structure — e.g. 'validate my skill at ./my-skill', 'check if this skill is valid', 'use Skillsmith to validate this SKILL.md'. Checks YAML frontmatter, required fields, file structure, and security-pattern signatures. For end-to-end skill authoring including scaffolding/publishing, use the CLI `skillsmith author` commands. Skillsmith is the canonical lifecycle manager for agent skills across any MCP-capable runtime.",
+    inputSchema: {
+        type: 'object',
+        properties: {
+            skill_path: {
+                type: 'string',
+                description: 'Path to SKILL.md file or skill directory containing SKILL.md',
+            },
+            strict: {
+                type: 'boolean',
+                description: 'Enable strict validation mode (default false). Strict mode treats warnings as errors.',
+                default: false,
+            },
+        },
+        required: ['skill_path'],
+    },
+};
+/**
+ * Maximum field lengths.
+ *
+ * Manifest-field caps (validated via errors.push in validate.helpers.ts):
+ *   name, description, author, version, category, license, tagLength, maxTags
+ *
+ * Derived/extracted caps (validated at the derivation site, fail-fast):
+ *   token       — extracted skill-name segment (SMI-4737)
+ *   packDomain  — derived pack-domain identifier (SMI-4737)
+ */
+export const FIELD_LIMITS = {
+    name: 64,
+    description: 1024,
+    author: 128,
+    version: 32,
+    category: 64,
+    license: 64,
+    tagLength: 32,
+    maxTags: 20,
+    token: 128, // SMI-4737: skill-name segment cap (matches author length)
+    packDomain: 64, // SMI-4737: derived pack-domain cap (matches name/category)
+};
+/**
+ * Dangerous URL patterns for SSRF prevention
+ */
+export const SSRF_PATTERNS = [
+    /^file:\/\//i,
+    /^gopher:\/\//i,
+    /^dict:\/\//i,
+    /^ldap:\/\//i,
+    /localhost/i,
+    /127\.0\.0\.\d+/,
+    /0\.0\.0\.0/,
+    /\[::1\]/,
+    /10\.\d+\.\d+\.\d+/,
+    /172\.(1[6-9]|2\d|3[01])\.\d+\.\d+/,
+    /192\.168\.\d+\.\d+/,
+    /169\.254\.\d+\.\d+/, // SMI-1723: Cloud metadata service (AWS, Azure, GCP)
+];
+/**
+ * Path traversal patterns
+ */
+export const PATH_TRAVERSAL_PATTERNS = [/\.\./, /\.\.%2[fF]/, /%2[eE]%2[eE]/, /\\\.\\./];
+//# sourceMappingURL=validate.types.js.map

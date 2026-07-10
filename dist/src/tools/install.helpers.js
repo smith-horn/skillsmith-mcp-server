@@ -1,0 +1,344 @@
+/**
+ * @fileoverview Install Tool Helper Functions
+ * @module @skillsmith/mcp-server/tools/install.helpers
+ */
+import * as fs from 'fs/promises';
+import * as path from 'path';
+// SMI-2171: Import parseRepoUrl from @skillsmith/core for shared use
+import { parseRepoUrl, QuarantineRepository } from '@skillsmith/core';
+import { MANIFEST_PATH, SKILLSMITH_DIR, validateTrustTier, } from './install.types.js';
+// Re-export for backward compatibility
+export { parseRepoUrl };
+// ============================================================================
+// Manifest Locking
+// ============================================================================
+/**
+ * SMI-1533: Lock file path for manifest operations
+ */
+const MANIFEST_LOCK_PATH = MANIFEST_PATH + '.lock';
+const LOCK_TIMEOUT_MS = 30000; // 30 seconds max wait for lock
+const LOCK_RETRY_INTERVAL_MS = 100;
+/**
+ * Acquire a file lock for manifest operations
+ * SMI-1533: Prevents race conditions during concurrent installs
+ */
+export async function acquireManifestLock() {
+    const startTime = Date.now();
+    // Ensure the skillsmith directory exists before attempting to create lock file
+    // This fixes ENOENT errors in CI environments where ~/.skillsmith doesn't exist
+    await fs.mkdir(SKILLSMITH_DIR, { recursive: true });
+    while (Date.now() - startTime < LOCK_TIMEOUT_MS) {
+        try {
+            // Try to create lock file exclusively
+            await fs.writeFile(MANIFEST_LOCK_PATH, String(process.pid), { flag: 'wx' });
+            return; // Lock acquired
+        }
+        catch (error) {
+            if (error.code === 'EEXIST') {
+                // Lock exists, check if it's stale (older than timeout)
+                try {
+                    const stats = await fs.stat(MANIFEST_LOCK_PATH);
+                    const lockAge = Date.now() - stats.mtimeMs;
+                    if (lockAge > LOCK_TIMEOUT_MS) {
+                        // Stale lock, remove it and retry
+                        await fs.unlink(MANIFEST_LOCK_PATH).catch(() => { });
+                        continue;
+                    }
+                }
+                catch {
+                    // Lock file disappeared, retry
+                    continue;
+                }
+                // Wait before retrying
+                await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_INTERVAL_MS));
+            }
+            else {
+                throw error;
+            }
+        }
+    }
+    throw new Error('Failed to acquire manifest lock after ' + LOCK_TIMEOUT_MS + 'ms');
+}
+/**
+ * Release the manifest lock
+ */
+export async function releaseManifestLock() {
+    try {
+        await fs.unlink(MANIFEST_LOCK_PATH);
+    }
+    catch {
+        // Ignore errors - lock may already be released
+    }
+}
+// ============================================================================
+// Manifest Operations
+// ============================================================================
+/**
+ * Load or create manifest
+ */
+export async function loadManifest() {
+    try {
+        const content = await fs.readFile(MANIFEST_PATH, 'utf-8');
+        return JSON.parse(content);
+    }
+    catch {
+        return {
+            version: '1.0.0',
+            installedSkills: {},
+        };
+    }
+}
+/**
+ * Save manifest
+ * SMI-1533: Uses atomic write pattern with lock
+ */
+export async function saveManifest(manifest) {
+    await fs.mkdir(path.dirname(MANIFEST_PATH), { recursive: true });
+    // Write to temp file first, then rename for atomic operation
+    const tempPath = MANIFEST_PATH + '.tmp.' + process.pid;
+    await fs.writeFile(tempPath, JSON.stringify(manifest, null, 2));
+    await fs.rename(tempPath, MANIFEST_PATH);
+}
+/**
+ * SMI-1533: Safely update manifest with locking
+ * Prevents race conditions during concurrent install operations
+ */
+export async function updateManifestSafely(updateFn) {
+    await acquireManifestLock();
+    try {
+        const manifest = await loadManifest();
+        const updatedManifest = updateFn(manifest);
+        await saveManifest(updatedManifest);
+    }
+    finally {
+        await releaseManifestLock();
+    }
+}
+// ============================================================================
+// Parsing Functions
+// ============================================================================
+// parseRepoUrl is now imported from @skillsmith/core (SMI-2171)
+// and re-exported above for backward compatibility
+/**
+ * Parse skill ID or URL to get components
+ * SMI-1491: Added isRegistryId flag to detect registry skill IDs vs direct GitHub URLs
+ */
+export function parseSkillId(input) {
+    // Handle full GitHub URLs - not registry IDs
+    if (input.startsWith('https://github.com/')) {
+        const url = new URL(input);
+        const parts = url.pathname.split('/').filter(Boolean);
+        return {
+            owner: parts[0],
+            repo: parts[1],
+            path: parts.slice(2).join('/') || '',
+            isRegistryId: false,
+        };
+    }
+    // Handle slash-separated IDs
+    if (input.includes('/')) {
+        const parts = input.split('/');
+        // 2-part format: Could be registry ID (author/skill-name) - needs lookup
+        if (parts.length === 2) {
+            return {
+                owner: parts[0],
+                repo: parts[1],
+                path: '',
+                isRegistryId: true, // Mark as potential registry ID for lookup
+            };
+        }
+        // 3+ parts: owner/repo/path format (direct GitHub reference)
+        return {
+            owner: parts[0],
+            repo: parts[1],
+            path: parts.slice(2).join('/'),
+            isRegistryId: false,
+        };
+    }
+    // Handle UUID skill IDs — returned by the search tool, route through registry lookup
+    // UUID format: 8-4-4-4-12 hex characters (e.g. "a129e127-a82c-47e5-8bc5-09d7ba2e8734")
+    // SMI-2722: UUIDs must route through isRegistryId: true so lookupSkillFromRegistry is called
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (UUID_REGEX.test(input)) {
+        return {
+            owner: '',
+            repo: '',
+            path: '',
+            isRegistryId: true,
+        };
+    }
+    // Handle skill ID from registry
+    throw new Error('Invalid skill ID format: ' + input + '. Use owner/repo or GitHub URL.');
+}
+// ============================================================================
+// Registry Lookup
+// ============================================================================
+/**
+ * Look up skill in registry to get repo_url
+ * SMI-1491: Enables install to work with registry IDs like "author/skill-name"
+ *
+ * Follows API-first pattern: tries live API, falls back to local DB
+ */
+export async function lookupSkillFromRegistry(skillId, context) {
+    // Try API first (primary data source)
+    if (!context.apiClient.isOffline()) {
+        try {
+            const response = await context.apiClient.getSkill(skillId);
+            if (response.data.repo_url) {
+                return {
+                    repoUrl: response.data.repo_url,
+                    name: response.data.name,
+                    // SMI-1533: Validate trust tier for security scan configuration
+                    trustTier: validateTrustTier(response.data.trust_tier),
+                    // SMI-2383: Pass through quarantine status
+                    quarantined: response.data.quarantined === true,
+                    // SMI-3510: Content hash for tamper detection
+                    contentHash: response.data.content_hash ?? undefined,
+                };
+            }
+            // API found skill but no repo_url - it's seed data
+            return null;
+        }
+        catch {
+            // API failed, fall through to local DB
+        }
+    }
+    // Fallback: Local database
+    const dbSkill = context.skillRepository.findById(skillId);
+    if (dbSkill?.repoUrl) {
+        // SMI-2437: Check local quarantine table for offline quarantine enforcement
+        const quarantineRepo = new QuarantineRepository(context.db);
+        const isQuarantined = quarantineRepo.isQuarantined(dbSkill.id || skillId);
+        return {
+            repoUrl: dbSkill.repoUrl,
+            name: dbSkill.name,
+            // SMI-1533: Validate trust tier for security scan configuration
+            trustTier: validateTrustTier(dbSkill.trustTier),
+            // SMI-2437: Pass through quarantine status from local DB
+            quarantined: isQuarantined,
+        };
+    }
+    return null;
+}
+// ============================================================================
+// GitHub Fetching
+// ============================================================================
+/**
+ * SMI-3221: Detect git-crypt encrypted content fetched from GitHub.
+ * raw.githubusercontent.com serves encrypted bytes for repos using git-crypt.
+ * The magic header is \x00GITCRYPT (hex 00474954435259505400).
+ */
+export function assertNotEncrypted(content, filePath) {
+    if (content.startsWith('\x00GITCRYPT')) {
+        throw new Error('File "' +
+            filePath +
+            '" is git-crypt encrypted. ' +
+            'The repository uses git-crypt and this file cannot be fetched from GitHub. ' +
+            'Workaround: clone the repo locally, unlock with git-crypt, then install with:\n' +
+            '  cp -r /path/to/repo/.claude/skills/<skill-name> ~/.claude/skills/<skill-name>');
+    }
+}
+/**
+ * Fetch file from GitHub
+ * SMI-1491: Added optional branch parameter to use branch from repo_url
+ */
+export async function fetchFromGitHub(owner, repo, filePath, branch = 'main') {
+    const url = 'https://raw.githubusercontent.com/' + owner + '/' + repo + '/' + branch + '/' + filePath;
+    const response = await fetch(url);
+    if (!response.ok) {
+        // If specified branch fails and it was 'main', try 'master' as fallback
+        if (branch === 'main') {
+            const masterUrl = 'https://raw.githubusercontent.com/' + owner + '/' + repo + '/master/' + filePath;
+            const masterResponse = await fetch(masterUrl);
+            if (!masterResponse.ok) {
+                throw new Error('Failed to fetch ' + filePath + ': ' + response.status);
+            }
+            const masterText = await masterResponse.text();
+            assertNotEncrypted(masterText, filePath);
+            return masterText;
+        }
+        throw new Error('Failed to fetch ' + filePath + ': ' + response.status);
+    }
+    const text = await response.text();
+    assertNotEncrypted(text, filePath);
+    return text;
+}
+/**
+ * Validate SKILL.md content
+ */
+export function validateSkillMd(content) {
+    const errors = [];
+    // Check for required sections
+    if (!content.includes('# ')) {
+        errors.push('Missing title (# heading)');
+    }
+    // Check minimum length
+    if (content.length < 100) {
+        errors.push('SKILL.md is too short (minimum 100 characters)');
+    }
+    return {
+        valid: errors.length === 0,
+        errors,
+    };
+}
+/**
+ * Generate post-install tips
+ */
+export function generateTips(skillName) {
+    return [
+        'Skill "' + skillName + '" installed successfully!',
+        'To use this skill, mention it in Claude Code: "Use the ' + skillName + ' skill to..."',
+        'View installed skills: ls ~/.claude/skills/',
+        'To uninstall: use the uninstall_skill tool',
+    ];
+}
+/**
+ * SMI-1788: Generate post-install tips with optimization info
+ */
+export function generateOptimizedTips(skillName, optimizationInfo, claudeMdSnippet) {
+    const tips = [
+        'Skill "' + skillName + '" installed successfully!',
+        'To use this skill, mention it in Claude Code: "Use the ' + skillName + ' skill to..."',
+        'View installed skills: ls ~/.claude/skills/',
+    ];
+    if (optimizationInfo.optimized) {
+        tips.push('');
+        tips.push('[Optimization] Skillsmith Optimization Applied:');
+        if (optimizationInfo.tokenReductionPercent && optimizationInfo.tokenReductionPercent > 0) {
+            tips.push(`  • Estimated ${optimizationInfo.tokenReductionPercent}% token reduction`);
+        }
+        if (optimizationInfo.originalLines && optimizationInfo.optimizedLines) {
+            tips.push(`  • Optimized from ${optimizationInfo.originalLines} to ${optimizationInfo.optimizedLines} lines`);
+        }
+        if (optimizationInfo.subSkills && optimizationInfo.subSkills.length > 0) {
+            tips.push(`  • ${optimizationInfo.subSkills.length} sub-skills created for on-demand loading`);
+        }
+        if (optimizationInfo.subagentGenerated && optimizationInfo.subagentPath) {
+            tips.push(`  • Companion subagent generated: ${optimizationInfo.subagentPath}`);
+            tips.push('');
+            tips.push('[Tip] For parallel execution, delegate to the subagent instead of running directly.');
+            if (claudeMdSnippet) {
+                tips.push('');
+                tips.push('Add this to your CLAUDE.md for automatic delegation:');
+                tips.push('');
+                // Include a shortened version of the snippet
+                const shortSnippet = claudeMdSnippet
+                    .split('\n')
+                    .filter((line) => line.trim().length > 0)
+                    .slice(0, 5)
+                    .join('\n');
+                tips.push(shortSnippet + '\n...');
+            }
+        }
+    }
+    tips.push('');
+    tips.push('To uninstall: use the uninstall_skill tool');
+    return tips;
+}
+// ============================================================================
+// Conflict Resolution Helpers (SMI-1865)
+// Split to install.conflict-helpers.ts per governance code review
+// ============================================================================
+// Re-export conflict resolution helpers from dedicated module
+export { hashContent, detectModifications, createSkillBackup, storeOriginal, loadOriginal, cleanupOldBackups, getBackupsDir, } from './install.conflict-helpers.js';
+//# sourceMappingURL=install.helpers.js.map
