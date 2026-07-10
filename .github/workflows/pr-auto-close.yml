@@ -1,0 +1,31 @@
+name: Close PRs (read-only mirror)
+
+# This repo is a read-only, auto-generated mirror (see README banner).
+# Pull requests can't be disabled via repo settings the way issues/wiki/
+# projects can, so this workflow comments on and closes any PR opened here,
+# pointing the author at the canonical repo. See SMI-5629, plan Step 1.
+
+on:
+  pull_request:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+concurrency:
+  group: pr-auto-close-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  close-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment and close
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo "$REPO" \
+            --body "This is a read-only auto-generated mirror; open PRs against smith-horn/skillsmith instead."
+          gh pr close "$PR_NUMBER" --repo "$REPO"
