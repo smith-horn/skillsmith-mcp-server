@@ -6,11 +6,22 @@
  * - Tier 1 skills list for auto-installation
  * - Welcome message formatting
  *
- * Tier 1 skills (from research doc):
- * - varlock (score: 95) - Security foundation
- * - commit (score: 92) - Git workflow
- * - governance (score: 88) - Code quality
- * - skill-builder (score: 90) - Custom skill creation
+ * Tier 1 skills (SMI-5582):
+ *
+ * The original list hardcoded four `anthropic/*` registry IDs
+ * (anthropic/varlock, anthropic/commit, anthropic/skill-builder,
+ * anthropic/governance) that have never existed in the live skills
+ * registry, causing first-run auto-install to fail for ~100% of real
+ * users. These have been replaced with real, verified-tier, published
+ * substitutes from the `getsentry/skills` registry
+ * (https://github.com/getsentry/skills):
+ * - skill-writer (score: 92) - Custom skill creation (substitute for skill-builder)
+ * - commit (score: 86) - Git workflow
+ * - code-review (score: 86) - Code quality (substitute for governance)
+ *
+ * `varlock` has no suitable registry substitute and is handled
+ * separately as a bundled first-party asset rather than a registry
+ * lookup — it is intentionally not represented here.
  */
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -30,10 +41,9 @@ export const FIRST_RUN_MARKER = join(SKILLSMITH_DIR, '.first-run-complete');
  * in the skill prioritization research.
  */
 export const TIER1_SKILLS = [
-    { id: 'anthropic/varlock', name: 'varlock', score: 95 },
-    { id: 'anthropic/commit', name: 'commit', score: 92 },
-    { id: 'anthropic/skill-builder', name: 'skill-builder', score: 90 },
-    { id: 'anthropic/governance', name: 'governance', score: 88 },
+    { id: 'getsentry/skill-writer', name: 'skill-writer', score: 92 },
+    { id: 'getsentry/commit', name: 'commit', score: 86 },
+    { id: 'getsentry/code-review', name: 'code-review', score: 86 },
 ];
 /**
  * Check if this is the first run of Skillsmith
@@ -60,13 +70,20 @@ export function markFirstRunComplete() {
     writeFileSync(FIRST_RUN_MARKER, new Date().toISOString());
 }
 /**
- * Generate welcome message after first run setup
+ * Render the first-run welcome message from structured skill info.
  *
- * @param installedSkills - List of skill names that were installed
- * @returns Formatted welcome message
+ * SMI-5573: this is the canonical formatter. Registry skills carry an
+ * `attribution` (rendered as `name (by author)`) so third-party authorship is
+ * disclosed in the response the user actually sees; bundled first-party skills
+ * render as a bare `name`.
+ *
+ * @param skills - Installed skills to list (bundled first, registry after).
+ * @returns Formatted welcome message.
  */
-export function getWelcomeMessage(installedSkills) {
-    const skillList = installedSkills.map((s) => `  - ${s}`).join('\n');
+export function formatWelcomeMessage(skills) {
+    const skillList = skills
+        .map((s) => (s.attribution ? `  - ${s.name} (by ${s.attribution})` : `  - ${s.name}`))
+        .join('\n');
     return `
 Welcome to Skillsmith!
 
@@ -75,5 +92,19 @@ ${skillList}
 
 Try: "Write a commit message" to see the commit skill in action.
 `.trim();
+}
+/**
+ * Generate welcome message after first run setup.
+ *
+ * Backwards-compatible string[] entrypoint — delegates to
+ * {@link formatWelcomeMessage} treating every entry as a first-party
+ * (unattributed) skill. New call sites that have attribution should call
+ * `formatWelcomeMessage` directly.
+ *
+ * @param installedSkills - List of skill names that were installed
+ * @returns Formatted welcome message
+ */
+export function getWelcomeMessage(installedSkills) {
+    return formatWelcomeMessage(installedSkills.map((name) => ({ name })));
 }
 //# sourceMappingURL=first-run.js.map

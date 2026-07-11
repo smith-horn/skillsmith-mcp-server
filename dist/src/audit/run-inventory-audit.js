@@ -3,9 +3,10 @@
  * @module @skillsmith/mcp-server/audit/run-inventory-audit
  *
  * Composes Wave 1 (scan + detect + history) + Wave 2 (rename suggestions)
- * + Wave 3 (recommended edits) + Wave 4 PR 3 (exclusions filter) into a
- * single entry-point used by both the `skill_inventory_audit` MCP tool
- * (this PR) and the `sklx audit collisions` CLI command (PR 5).
+ * + Wave 3 (recommended edits) + Wave 4 PR 3 (exclusions filter) +
+ * Wave 2B (SMI-5535 rot detection) into a single entry-point used by both
+ * the `skill_inventory_audit` MCP tool (this PR) and the
+ * `sklx audit collisions` CLI command (PR 5).
  *
  * Plan: docs/internal/implementation/smi-4590-cli-mcp-framework-adapter.md §1.
  *
@@ -16,30 +17,38 @@
  *      using `generateSuggestionChain` to pick a non-colliding name and
  *      mtime-descending tiebreak to pick which entry to rename.
  *   4. `runEditSuggester`     (Wave 3)           — recommended prose edits.
- *   5. Apply `~/.skillsmith/audit-exclusions.json` filter (Wave 4 PR 3)
- *      when `applyExclusions !== false`.
- *   6. `writeAuditHistory`    (Wave 1)           — persist `result.json`.
- *   7. `writeAuditSuggestions` (this PR)          — persist `suggestions.json`
+ *   5. `detectRot`            (Wave 2B, SMI-5535) — dead-ref scan over the
+ *      same inventory/auditId as the collision pass (version-drift is a
+ *      documented no-op scaffold — see `rot-detector.ts`'s header).
+ *   6. Apply `~/.skillsmith/audit-exclusions.json` filter (Wave 4 PR 3)
+ *      when `applyExclusions !== false`. Rot findings pass through the
+ *      SAME filter as generic/semantic flags — an excluded entry
+ *      suppresses its rot finding too.
+ *   7. `writeAuditHistory`    (Wave 1)           — persist `result.json`.
+ *   8. `writeAuditSuggestions` (this PR)          — persist `suggestions.json`
  *      (so PR 4's apply-tools can look up rename + edit by collisionId).
- *   8. Build + return the response shape.
+ *   9. Build + return the response shape.
  *
  * Tier defaults to `'community'` (cheapest fail-safe). Callers (the MCP
  * tool, the CLI) pass through their resolved tier; the session-start
  * audit hook (PR 6) passes the user's resolved tier from license info.
  */
-import * as crypto from 'node:crypto';
-import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { loadExclusions, isExcluded as isExcludedCore, } from '@skillsmith/core/audit';
-import { AGENT_PACK_SKILL_NAME } from '@skillsmith/core';
 import { scanLocalInventory } from '../utils/local-inventory.js';
 import { detectCollisions } from './collision-detector.js';
 import { writeAuditHistory } from './audit-history.js';
 import { writeAuditReport } from './audit-report-writer.js';
 import { writeAuditSuggestions } from './audit-suggestions.js';
 import { runEditSuggester } from './edit-suggester.js';
-import { generateSuggestionChain } from './suggestion-chain.js';
-import { FIELD_LIMITS } from '../tools/validate.types.js';
+import { detectRot } from './rot-detector.js';
+import { buildRenameSuggestions, dedupeAgentPackCollisions, } from './run-inventory-audit.detectors.js';
+// Re-exported for backward compatibility: `run-inventory-audit.dedup.test.ts`
+// (and any other consumer) imports `dedupeAgentPackCollisions` directly from
+// this module's path — the SMI-5535 Wave 2B split moved the implementation
+// to `./run-inventory-audit.detectors.js` but the public import path here
+// is preserved.
+export { dedupeAgentPackCollisions };
 /**
  * Run the full inventory audit pipeline. Single entrypoint shared by the
  * MCP `skill_inventory_audit` tool and the CLI `sklx audit collisions`
@@ -78,6 +87,13 @@ export async function runInventoryAudit(opts = {}) {
     // exclusion — and BEFORE exclusions/rename-suggestion building so a
     // self-exempted collision never produces a rename suggestion either.
     const detectorResult = dedupeAgentPackCollisions(rawDetectorResult);
+    // Step 2c (SMI-5535 Wave 2B): rot-detection pass over the SAME inventory
+    // snapshot + auditId the collision detector used above. Detection-only —
+    // see `rot-detector.ts`'s header for the dead-ref / version-drift
+    // signal contract.
+    const rotFindings = await detectRot(detectorResult.inventory, {
+        auditId: detectorResult.auditId,
+    });
     // Step 3: build rename suggestions for each exact collision.
     const renameSuggestions = buildRenameSuggestions(detectorResult, scan.entries);
     // Step 4: run the edit suggester (Wave 3 — semantic-collision path).
@@ -89,6 +105,7 @@ export async function runInventoryAudit(opts = {}) {
     let filtered = detectorResult;
     let filteredRenames = renameSuggestions;
     let filteredEdits = recommendedEdits;
+    let filteredRot = rotFindings;
     if (applyExclusions) {
         const exclusions = await loadExclusions();
         filtered = applyExclusionsFilter(detectorResult, exclusions);
@@ -99,6 +116,9 @@ export async function runInventoryAudit(opts = {}) {
             ...filtered.semanticCollisions.map((f) => f.collisionId),
         ]);
         filteredEdits = recommendedEdits.filter((e) => keptCollisionIds.has(e.collisionId));
+        // A user exclusion should be able to suppress a rot finding the same
+        // way it suppresses a generic/semantic flag — mirror those filters.
+        filteredRot = rotFindings.filter((f) => !isExcludedInventoryEntry(f.entry, exclusions));
     }
     // Step 6: persist `result.json` + `report.md`. The history writer
     // creates the per-audit directory; the report writer reuses it.
@@ -107,10 +127,28 @@ export async function runInventoryAudit(opts = {}) {
         auditDir: history.reportPath.replace(/\/report\.md$/, ''),
         renameSuggestions: filteredRenames,
         recommendedEdits: filteredEdits,
+        rotFindings: filteredRot,
     });
     // Step 7: persist `suggestions.json` (this PR — for the apply-tools).
     await writeAuditSuggestions(filtered.auditId, filteredRenames, filteredEdits);
     const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+    // Rot findings are 'warning' severity today (dead-ref is the only
+    // implemented signal); fold them into totalFlags/warningCount the same
+    // way genericFlags/semanticCollisions are counted. `'info'`-severity
+    // findings (reserved, unused in v1) are deliberately excluded from the
+    // warning tally.
+    //
+    // MEDIUM-2 fix (SMI-5535 Wave 2B): `writeAuditReport` above was called
+    // with `rotFindings: filteredRot` already, but its summary header used
+    // to read only `filtered.summary` (collision-only) — so a report with a
+    // populated "Rot / dead references" section still printed the
+    // collision-only "Total flags"/"Warnings" totals, silently disagreeing
+    // with the augmented totals returned below. `renderSummaryHeader`
+    // (audit-report-writer.ts) now derives the SAME rot-warning fold
+    // directly from the `rotFindings` array it already received, so the
+    // report header and this JSON `summary` can never drift apart — no
+    // separate count needs threading through this call.
+    const rotWarningCount = filteredRot.filter((f) => f.severity === 'warning').length;
     // Step 8: build the response.
     return {
         auditId: filtered.auditId,
@@ -120,12 +158,13 @@ export async function runInventoryAudit(opts = {}) {
         semanticCollisions: filtered.semanticCollisions,
         renameSuggestions: filteredRenames,
         recommendedEdits: filteredEdits,
+        rotFindings: filteredRot,
         reportPath: history.reportPath,
         summary: {
             totalEntries: filtered.summary.totalEntries,
-            totalFlags: filtered.summary.totalFlags,
+            totalFlags: filtered.summary.totalFlags + rotWarningCount,
             errorCount: filtered.summary.errorCount,
-            warningCount: filtered.summary.warningCount,
+            warningCount: filtered.summary.warningCount + rotWarningCount,
             durationMs,
         },
     };
@@ -133,136 +172,6 @@ export async function runInventoryAudit(opts = {}) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-/**
- * Build a `RenameSuggestion[]` from each `ExactCollisionFlag`. We pick the
- * **most-recently-installed** entry (mtime descending) as the rename
- * target — matches plan §259 default-entry tiebreak. Falls back to the
- * first entry when mtime is missing.
- *
- * Author / packDomain are left null for v1 — chain falls through to the
- * `local-` prefix path (`local-foo`, `local-foo-<shortHash>`). Wave 4 PR 5
- * extends this with manifest lookups for richer prefixes.
- */
-function buildRenameSuggestions(result, fullInventory) {
-    const suggestions = [];
-    for (const flag of result.exactCollisions) {
-        if (flag.entries.length === 0)
-            continue;
-        // mtime-descending tiebreak; missing mtime sinks to the bottom.
-        const sorted = [...flag.entries].sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
-        const target = sorted[0];
-        const action = inventoryKindToRenameAction(target);
-        if (action === null)
-            continue; // claude_md_rule entries can't be renamed.
-        // SMI-4737: defensive cap on filesystem-derived identifier. Filesystem
-        // entries with > 128-char names produce no rename suggestion; the
-        // collision is still surfaced via `result.exactCollisions`.
-        const rawToken = stripLeadingSlash(target.identifier);
-        if (rawToken.length > FIELD_LIMITS.token) {
-            continue;
-        }
-        const chain = generateSuggestionChain({
-            token: rawToken,
-            author: target.meta?.author ?? null,
-            packDomain: null,
-            tagFallback: target.meta?.tags?.[0] ?? null,
-            authorPath: target.source_path,
-            existingInventory: fullInventory,
-        });
-        const lowercaseInventory = new Set(fullInventory.map((e) => e.identifier.toLowerCase()));
-        const firstFree = chain.candidates.find((c) => !lowercaseInventory.has(c.toLowerCase()));
-        const suggested = firstFree ?? chain.candidates[0] ?? target.identifier;
-        suggestions.push({
-            collisionId: flag.collisionId,
-            entry: target,
-            currentName: target.identifier,
-            suggested,
-            applyAction: action,
-            reason: flag.reason,
-        });
-    }
-    return suggestions;
-}
-function stripLeadingSlash(identifier) {
-    return identifier.startsWith('/') ? identifier.slice(1) : identifier;
-}
-/** Map an `InventoryEntry.kind` to a `RenameAction`, or `null` for unrenamable kinds. */
-function inventoryKindToRenameAction(entry) {
-    switch (entry.kind) {
-        case 'command':
-            return 'rename_command_file';
-        case 'agent':
-            return 'rename_agent_file';
-        case 'skill':
-            return 'rename_skill_dir_and_frontmatter';
-        case 'claude_md_rule':
-            return null;
-        default:
-            return null;
-    }
-}
-/**
- * SMI-5456 Wave 1 Step 5 (plan §6): drop an exact-collision flag when it is
- * the dual-path Skillsmith Agent pack colliding with itself.
- *
- * Dedupe key is name+content-hash, NOT name alone: a flag is dropped only
- * when EVERY entry in it is `kind: 'skill'`, has `identifier ===
- * AGENT_PACK_SKILL_NAME` ('skillsmith-agent'), AND shares an identical
- * SHA-256 of its `source_path` file content. The content-hash check is the
- * load-bearing part — a namespace-squatting skill hand-named
- * "skillsmith-agent" with DIFFERENT content must still be flagged (that is
- * exactly the collision detector's job); only a genuine byte-identical
- * dual-path copy (which the installer guarantees per-release, per
- * `AgentInstallResult` P-5 "Dual-path pack copies" invariant) is self-exempt.
- *
- * A read/hash failure on any entry (e.g. a symlink race) is treated as
- * "cannot prove identity" — the flag is KEPT (fail toward showing the
- * finding, never toward silently hiding a real collision).
- *
- * Exported (not just used internally) so it is directly unit-testable
- * without invoking the full `runInventoryAudit` pipeline, which writes to
- * the real `~/.skillsmith/audits/` (no test-isolation override exists for
- * that path today — see `run-inventory-audit.dedup.test.ts`'s header).
- */
-export function dedupeAgentPackCollisions(result) {
-    const exactCollisions = result.exactCollisions.filter((flag) => !isAgentPackSelfCollision(flag));
-    if (exactCollisions.length === result.exactCollisions.length)
-        return result;
-    const errorCount = exactCollisions.length;
-    const warningCount = result.genericFlags.length + result.semanticCollisions.length;
-    return {
-        ...result,
-        exactCollisions,
-        summary: {
-            ...result.summary,
-            totalFlags: errorCount + warningCount,
-            errorCount,
-        },
-    };
-}
-/** Is `flag` entirely explained by byte-identical dual-path copies of the Skillsmith Agent pack? */
-function isAgentPackSelfCollision(flag) {
-    if (flag.entries.length < 2)
-        return false;
-    if (!flag.entries.every((entry) => entry.kind === 'skill' && entry.identifier === AGENT_PACK_SKILL_NAME)) {
-        return false;
-    }
-    const hashes = flag.entries.map((entry) => hashFileContent(entry.source_path));
-    if (hashes.some((h) => h === null))
-        return false; // unreadable — fail toward keeping the flag.
-    const [first, ...rest] = hashes;
-    return rest.every((h) => h === first);
-}
-/** SHA-256 hex of a file's content, or null on any read failure (never throws). */
-function hashFileContent(filePath) {
-    try {
-        const content = fs.readFileSync(filePath);
-        return crypto.createHash('sha256').update(content).digest('hex');
-    }
-    catch {
-        return null;
-    }
-}
 /**
  * Drop a collision flag iff ANY involved entry matches an exclusion. The
  * intent of an exclusion is "I deliberately keep this entry around" —

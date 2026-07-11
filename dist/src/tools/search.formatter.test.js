@@ -68,6 +68,17 @@ describe('formatSearchResults — discovery-only hidden notice (SMI-5178)', () =
         const out = formatSearchResults(baseResponse({ results: [], total: 0, discoveryOnlyHidden: 0 }));
         expect(out).toContain('installable_only: false');
     });
+    // SMI-5556: when the tool-provided suggestion is present, it replaces the
+    // hardcoded bullet list entirely.
+    it('prefers response.suggestion over the hardcoded bullet list when present', () => {
+        const out = formatSearchResults(baseResponse({
+            results: [],
+            total: 0,
+            suggestion: 'Try a single-topic query per call instead.',
+        }));
+        expect(out).toContain('Try a single-topic query per call instead.');
+        expect(out).not.toContain('Suggestions:');
+    });
 });
 describe('formatSearchResults — license display (SMI-5327)', () => {
     it('renders the SPDX identifier verbatim when license is "MIT"', () => {
@@ -148,6 +159,107 @@ describe('formatSearchResults — license display (SMI-5327)', () => {
             ],
         }));
         expect(out).toContain('License: Unknown');
+    });
+});
+/**
+ * SMI-2734: Tests for installHint field in formatSearchResults
+ * Verifies registry skills surface the owner/name install ID and local skills do not.
+ *
+ * Moved from search.test.ts during SMI-5556 to keep that file under the
+ * 500-line gate after adding empty-result suggestion coverage.
+ */
+describe('SMI-2734: formatSearchResults installHint', () => {
+    const baseSkill = {
+        id: 'a129e127-a82c-47e5-8bc5-09d7ba2e8734',
+        name: 'performance',
+        description: 'Web performance auditing skill',
+        author: 'addyosmani',
+        category: 'development',
+        trustTier: 'verified',
+        score: 84,
+        source: 'registry',
+    };
+    const makeResponse = (results) => ({
+        results,
+        total: results.length,
+        query: 'performance',
+        filters: {},
+        timing: { searchMs: 10, totalMs: 12 },
+    });
+    it('should display Install line for a registry skill with installHint set', () => {
+        const skill = { ...baseSkill, installHint: 'addyosmani/performance' };
+        const formatted = formatSearchResults(makeResponse([skill]));
+        expect(formatted).toContain('Install: addyosmani/performance');
+    });
+    it('should not display Install line when installHint is absent', () => {
+        const skill = { ...baseSkill };
+        // installHint intentionally not set (local skill or unknown author)
+        const formatted = formatSearchResults(makeResponse([skill]));
+        expect(formatted).not.toContain('Install:');
+    });
+    it('should display Install line only for skills that have installHint in a mixed result set', () => {
+        const registrySkill = {
+            ...baseSkill,
+            id: 'b1',
+            name: 'commit',
+            author: 'anthropic',
+            installHint: 'anthropic/commit',
+            source: 'registry',
+        };
+        const localSkill = {
+            ...baseSkill,
+            id: 'b2',
+            name: 'my-local-skill',
+            author: 'local-user',
+            source: 'local',
+            // installHint intentionally absent for local skill
+        };
+        const formatted = formatSearchResults(makeResponse([registrySkill, localSkill]));
+        expect(formatted).toContain('Install: anthropic/commit');
+        // The local skill section should not contain an Install line
+        // Split on blank lines between skill entries to isolate each block
+        const sections = formatted.split('\n\n');
+        const localSection = sections.find((s) => s.includes('my-local-skill'));
+        expect(localSection).toBeDefined();
+        expect(localSection).not.toContain('Install:');
+    });
+});
+/**
+ * SMI-2759: Tests for repository field in formatSearchResults
+ *
+ * Moved from search.test.ts during SMI-5556 to keep that file under the
+ * 500-line gate after adding empty-result suggestion coverage.
+ */
+describe('SMI-2759: formatSearchResults repository', () => {
+    const baseSkill = {
+        id: 'c1-repo-test',
+        name: 'repo-skill',
+        description: 'A skill with a source repository',
+        author: 'testauthor',
+        category: 'development',
+        trustTier: 'community',
+        score: 75,
+        source: 'registry',
+    };
+    const makeResponse = (results) => ({
+        results,
+        total: results.length,
+        query: 'repo',
+        filters: {},
+        timing: { searchMs: 5, totalMs: 7 },
+    });
+    it('should display Repository line when repository is set', () => {
+        const skill = {
+            ...baseSkill,
+            repository: 'https://github.com/testauthor/repo-skill',
+        };
+        const formatted = formatSearchResults(makeResponse([skill]));
+        expect(formatted).toContain('Repository: https://github.com/testauthor/repo-skill');
+    });
+    it('should not display Repository line when repository is absent', () => {
+        const skill = { ...baseSkill };
+        const formatted = formatSearchResults(makeResponse([skill]));
+        expect(formatted).not.toContain('Repository:');
     });
 });
 //# sourceMappingURL=search.formatter.test.js.map

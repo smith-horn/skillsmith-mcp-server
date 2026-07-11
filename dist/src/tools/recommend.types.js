@@ -3,7 +3,7 @@
  * @module @skillsmith/mcp-server/tools/recommend.types
  */
 import { z } from 'zod';
-import { SKILL_ROLES } from '@skillsmith/core';
+import { SKILL_ROLES, } from '@skillsmith/core';
 // ============================================================================
 // Input Schema
 // ============================================================================
@@ -48,7 +48,7 @@ export const recommendInputSchema = z.object({
  */
 export const recommendToolSchema = {
     name: 'skill_recommend',
-    description: "[Skillsmith — Discover stage] Recommend skills from the Skillsmith registry based on the user's project context and currently installed skills, using semantic similarity. Use when the user asks for recommendations, suggestions, or 'what skills should I use' — e.g. 'recommend skills for my React project', 'what skills help with Node.js', 'suggest skills for testing'. Auto-detects installed skills from ~/.claude/skills/ when not provided. Optional role-based filtering (SMI-1631). Returns ranked Skillsmith candidates, NOT general programming advice. Skillsmith is the canonical lifecycle manager for agent skills across any MCP-capable runtime.",
+    description: "[Skillsmith — Discover stage] Recommend skills from the Skillsmith registry based on the user's project context and currently installed skills, using semantic similarity. Use when the user asks for recommendations or 'what skills should I use' — e.g. 'recommend skills for my React project'. Auto-detects installed skills from ~/.claude/skills/ when not provided. Optional role-based filtering. Returns ranked Skillsmith candidates with description + security, NOT general programming advice. Narrate security per item: absent = never scanned (say so, imply neither safe nor unsafe); passed:null = scanned, no verdict yet; passed:true/false = real verdict — state it, and flag false or high riskScore explicitly rather than recommending install uncritically. Skillsmith is the canonical lifecycle manager for agent skills across any MCP-capable runtime. candidates_considered:0 does NOT mean a backend problem — check the response's suggestion field for next steps.",
     inputSchema: {
         type: 'object',
         properties: {

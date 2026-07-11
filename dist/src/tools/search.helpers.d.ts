@@ -7,7 +7,7 @@
  * canonical slug map from @skillsmith/core — no import from search.ts, so there
  * is no circular dependency.
  */
-import { type SkillSearchResult, type CompatibilityFilter, type SearchResult } from '@skillsmith/core';
+import { type SkillSearchResult, type CompatibilityFilter, type ApiSearchResult, type SearchResult } from '@skillsmith/core';
 /**
  * SMI-2760: Filter search results by compatibility tags.
  * Skills with no compatibility data are included (`[]`/absent = unknown/unscoped,
@@ -37,6 +37,23 @@ export declare function filterInstallable(results: SkillSearchResult[], installa
  */
 export declare function resolveDefaultCompatibility(explicitClient: string | undefined): CompatibilityFilter | undefined;
 /**
+ * SMI-5563: Map an API search-result row (registry path) to the
+ * SkillSearchResult wire format used by the MCP search tool.
+ *
+ * Extracted from search.ts to keep that file under the 500-line governance
+ * limit. Mirrors mapLocalSkillToSearchResult below — added so the registry
+ * path stops silently dropping `security` even though skills-search already
+ * hydrates security_score/last_scanned_at/security_findings/quarantined
+ * server-side (SMI-4251).
+ *
+ * SMI-1491: repository field for installation source transparency.
+ * SMI-2734: installHint guarded on a real registry owner.
+ * SMI-2760: compatibility tags (read via cast — see inline comment below).
+ * SMI-5327: SPDX license.
+ * SMI-5563: security summary via the shared deriveSecuritySummaryFromApiSkill helper.
+ */
+export declare function mapApiSkillToSearchResult(item: ApiSearchResult): SkillSearchResult;
+/**
  * SMI-5337 retro: Map a local SearchService result item to the SkillSearchResult
  * wire format used by the MCP search tool.
  *
@@ -51,4 +68,14 @@ export declare function resolveDefaultCompatibility(explicitClient: string | und
  * SMI-5327: SPDX license parity with the API path.
  */
 export declare function mapLocalSkillToSearchResult(item: SearchResult): SkillSearchResult;
+/**
+ * Build a `suggestion` string for a zero-result search response, explaining
+ * that matching is keyword-based (not semantic) and requires every query term
+ * to co-occur, so multi-concept queries often return nothing even when a
+ * relevant skill exists — plus any filter-specific hints.
+ */
+export declare function buildEmptySearchSuggestion(context: {
+    discoveryOnlyHidden?: number;
+    compatibilityHidden?: number;
+}): string;
 //# sourceMappingURL=search.helpers.d.ts.map

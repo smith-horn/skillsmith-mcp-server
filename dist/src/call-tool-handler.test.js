@@ -9,6 +9,12 @@
  * Plus: once-per-process consent annotation (Option A), error envelopes
  *      never annotated, `inventory_push` prose-body fail-open no-annotate.
  *
+ * First-run welcome message annotation (SMI-5573/5582) coverage — one-shot
+ * delivery, error envelopes never consuming the pending message, and
+ * composition with the consent annotator on the same response — lives in
+ * the sibling call-tool-handler.welcome.test.ts (split out to stay under
+ * the 500-line/file cap).
+ *
  * Observation seam (plan pass-2, matches
  * `middleware/__tests__/license.gate.test.ts`'s T2 block): `wrap.ts` (inside
  * `@skillsmith/core`) calls its own module-local `./posthog.js` binding, so
@@ -35,6 +41,7 @@ import * as path from 'node:path';
 import { initializePostHog, shutdownPostHog, getPostHog } from '@skillsmith/core/telemetry';
 import { handleCallToolRequest } from './call-tool-handler.js';
 import { _resetConsentCacheForTests } from './middleware/telemetry-consent.js';
+import { _resetPendingWelcomeForTests } from './middleware/first-run-welcome.js';
 import { createTestDatabase } from '../tests/integration/setup.js';
 // Mocking style matches telemetry-consent.test.ts / license.gate.test.ts's
 // T2 block: vi.mock the Supabase client module so `resolveConsent` (called
@@ -166,6 +173,7 @@ describe('handleCallToolRequest (SMI-5479 Step 3)', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         _resetConsentCacheForTests();
+        _resetPendingWelcomeForTests();
         initializePostHog({ apiKey: 'phc_test_key_smi_5479_dispatch' });
         // inventory_push has no offline gate of its own — SKILLSMITH_INVENTORY_DISABLE
         // short-circuits it to a pure local no-op (no network, no device-id
@@ -177,6 +185,7 @@ describe('handleCallToolRequest (SMI-5479 Step 3)', () => {
     afterEach(async () => {
         await shutdownPostHog();
         _resetConsentCacheForTests();
+        _resetPendingWelcomeForTests();
         if (previousInventoryDisable === undefined) {
             delete process.env.SKILLSMITH_INVENTORY_DISABLE;
         }

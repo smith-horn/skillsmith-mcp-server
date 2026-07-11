@@ -4,11 +4,18 @@
  * Enforces API call quotas based on license tier.
  * Integrates with the license middleware and QuotaEnforcementService.
  *
- * Tier Limits:
- * - Community: 1,000 API calls/month (free)
- * - Individual: 10,000 API calls/month ($9.99/mo)
- * - Team: 100,000 API calls/month ($25/user/mo)
+ * Tier Limits (SMI-5558):
+ * - Community: 100 API calls/month (free)
+ * - Individual: 1,000 API calls/month ($9.99/mo)
+ * - Team: 10,000 API calls/month ($25/user/mo)
  * - Enterprise: Unlimited
+ *
+ * Unlike the edge function's `quota-enforcer.ts` (which only hard-blocks
+ * Community and only when `ENFORCE_COMMUNITY_QUOTA=true`), this middleware
+ * has historically hard-blocked ALL non-unlimited tiers unconditionally.
+ * `SKILLSMITH_ENFORCE_MCP_QUOTA` (SMI-5558) adds a kill-switch so that behavior can be
+ * disabled without a redeploy if the 10x-lower quotas cause unexpected
+ * paid-tier disruption. Defaults to enforcing (preserves prior behavior).
  *
  * @see SMI-1055: Add license middleware to MCP server
  * @see packages/enterprise/src/quota/QuotaEnforcementService.ts

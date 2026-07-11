@@ -5,7 +5,7 @@
  * SMI-1719: Unit tests for extracted helper functions from Wave 3 refactor
  */
 import { describe, it, expect } from 'vitest';
-import { inferRolesFromTags, isSkillCollection, COLLECTION_PATTERNS, } from '../../src/tools/recommend.helpers.js';
+import { inferRolesFromTags, isSkillCollection, COLLECTION_PATTERNS, buildEmptyRecommendationSuggestion, buildDbFallbackRecommendation, } from '../../src/tools/recommend.helpers.js';
 describe('recommend.helpers', () => {
     describe('inferRolesFromTags', () => {
         it('returns empty array for empty tags', () => {
@@ -111,6 +111,104 @@ describe('recommend.helpers', () => {
             expect(COLLECTION_PATTERNS).toContain('-skills');
             expect(COLLECTION_PATTERNS).toContain('-collection');
             expect(COLLECTION_PATTERNS).toContain('-pack');
+        });
+    });
+    describe('buildEmptyRecommendationSuggestion (SMI-5556)', () => {
+        it('always clarifies candidates_considered is not a registry/backend fault', () => {
+            const out = buildEmptyRecommendationSuggestion({
+                installedCount: 3,
+                hasProjectContext: true,
+            });
+            expect(out).toContain('does not indicate a registry/backend problem');
+            expect(out).toContain('search tool');
+        });
+        it('suggests passing installed_skills only when installedCount is 0', () => {
+            const withZero = buildEmptyRecommendationSuggestion({
+                installedCount: 0,
+                hasProjectContext: true,
+            });
+            expect(withZero).toContain('Try passing installed_skills explicitly');
+            const withSome = buildEmptyRecommendationSuggestion({
+                installedCount: 2,
+                hasProjectContext: true,
+            });
+            expect(withSome).not.toContain('Try passing installed_skills explicitly');
+        });
+        it('suggests providing project_context only when hasProjectContext is false', () => {
+            const without = buildEmptyRecommendationSuggestion({
+                installedCount: 1,
+                hasProjectContext: false,
+            });
+            expect(without).toContain('Provide project_context for more relevant results');
+            const withContext = buildEmptyRecommendationSuggestion({
+                installedCount: 1,
+                hasProjectContext: true,
+            });
+            expect(withContext).not.toContain('Provide project_context for more relevant results');
+        });
+        it('suggests removing the role filter only when one is set', () => {
+            const withRole = buildEmptyRecommendationSuggestion({
+                installedCount: 1,
+                hasProjectContext: true,
+                roleFilter: 'testing',
+            });
+            expect(withRole).toContain('Try removing the role filter (currently: testing)');
+            const withoutRole = buildEmptyRecommendationSuggestion({
+                installedCount: 1,
+                hasProjectContext: true,
+            });
+            expect(withoutRole).not.toContain('role filter');
+        });
+    });
+    describe('buildDbFallbackRecommendation (SMI-5562)', () => {
+        function makeSkillData(overrides = {}) {
+            return {
+                id: 'author/skill',
+                name: 'skill',
+                description: 'A test skill',
+                triggerPhrases: [],
+                keywords: [],
+                qualityScore: 0.8,
+                trustTier: 'community',
+                roles: [],
+                installable: true,
+                riskScore: null,
+                securityFindingsCount: 0,
+                securityScannedAt: null,
+                securityPassed: null,
+                ...overrides,
+            };
+        }
+        function makeMatchResult(skill) {
+            return { skill, similarityScore: 0.75, matchReason: 'Matches your testing needs' };
+        }
+        it('omits `security` entirely for a never-scanned skill (securityScannedAt: null)', () => {
+            const rec = buildDbFallbackRecommendation(makeMatchResult(makeSkillData()), undefined);
+            expect(rec.security).toBeUndefined();
+        });
+        it('returns a defined security summary, passed straight through, once a skill has been scanned', () => {
+            const rec = buildDbFallbackRecommendation(makeMatchResult(makeSkillData({
+                riskScore: 15,
+                securityFindingsCount: 2,
+                securityScannedAt: '2026-07-01T00:00:00Z',
+                securityPassed: true,
+            })), undefined);
+            expect(rec.security).toEqual({
+                passed: true,
+                riskScore: 15,
+                findingsCount: 2,
+                scannedAt: '2026-07-01T00:00:00Z',
+            });
+        });
+        it('never coerces a real null riskScore to 0 once scannedAt is set (scanned-no-verdict case)', () => {
+            const rec = buildDbFallbackRecommendation(makeMatchResult(makeSkillData({
+                riskScore: null,
+                securityScannedAt: '2026-07-01T00:00:00Z',
+                securityPassed: null,
+            })), undefined);
+            expect(rec.security).toBeDefined();
+            expect(rec.security?.riskScore).toBeNull();
+            expect(rec.security?.passed).toBeNull();
         });
     });
 });

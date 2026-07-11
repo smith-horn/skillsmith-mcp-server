@@ -4,6 +4,7 @@
  * not just as a fallback.
  *
  * SMI-2755: Online API path tests split to recommend-online-path.test.ts.
+ * SMI-5562: formatRecommendations tests split to recommend.format.test.ts.
  */
 export {};
 //# sourceMappingURL=recommend.test.d.ts.map

@@ -17,6 +17,7 @@
  * and a smoke run that calls one tool and exits loses the event 100% of the
  * time.
  */
+import type { DatabaseType } from '@skillsmith/core';
 /** Bound on how long a shutdown flush may block process exit. */
 export declare const TELEMETRY_SHUTDOWN_FLUSH_TIMEOUT_MS = 2000;
 /**
@@ -36,13 +37,43 @@ export declare function flushTelemetryOnShutdown(timeoutMs?: number): Promise<vo
  */
 export declare function _resetShutdownGuardForTests(): void;
 /**
- * Build a shutdown trigger: run {@link flushTelemetryOnShutdown} then call
- * `onDone` (index.ts passes `() => process.exit(0)`). Registering ANY
- * listener for SIGTERM/SIGINT overrides Node's default terminate-on-signal
- * behavior, so `index.ts` MUST call this for each of transport `onclose` /
- * SIGTERM / SIGINT to preserve today's default (process exits promptly on
- * those signals) rather than leaving the process hanging once a listener is
- * registered.
+ * Fail-soft, synchronous close of the tool-context database on shutdown.
+ *
+ * On the WASM (`sql.js`) driver, `close()` is the only thing that ever
+ * persists the in-memory database to disk (`sqljsDriver.ts`'s `close()` →
+ * `persist()` → `writeFileSync`) — see SMI-5639. Before this, nothing in the
+ * shutdown path ever called `close()`, so every write made during a session
+ * was silently discarded on normal exit.
+ *
+ * Never throws — a `getDb()` that itself throws, or a `close()` that
+ * throws, is caught and logged via `logger.error` (NOT `.debug`/`.info`,
+ * which are disk-only per SMI-5615 — a failed persist is a genuine
+ * data-loss event and must be visible on stderr, not silently swallowed the
+ * same way the original bug was invisible).
+ *
+ * Idempotent by construction: `db.open` reflects the driver's real closed
+ * state (both `SqlJsDatabaseAdapter` and `BetterSqlite3Database` expose a
+ * reliable `open` getter), so calling this twice — e.g. `transport.onclose`
+ * racing a signal — only calls `.close()` once. No separate module-level
+ * guard flag is needed.
+ *
+ * @param getDb - Lazy getter for the current db (late-bound, so it can read
+ *   a `toolContext` that isn't assigned yet at trigger-creation time).
  */
-export declare function createShutdownTrigger(onDone: () => void): () => void;
+export declare function closeDbOnShutdown(getDb?: () => DatabaseType | undefined): void;
+/**
+ * Build a shutdown trigger: close the tool-context database (via
+ * {@link closeDbOnShutdown}, synchronously, so WASM-driver persistence isn't
+ * gated behind the telemetry flush's timeout), then run
+ * {@link flushTelemetryOnShutdown}, then call `onDone` (index.ts passes
+ * `() => process.exit(0)`). Registering ANY listener for SIGTERM/SIGINT
+ * overrides Node's default terminate-on-signal behavior, so `index.ts` MUST
+ * call this for each of transport `onclose` / SIGTERM / SIGINT to preserve
+ * today's default (process exits promptly on those signals) rather than
+ * leaving the process hanging once a listener is registered.
+ *
+ * @param getDb - Optional lazy getter for the current db, so shutdown can
+ *   close/persist it before the process exits (SMI-5639).
+ */
+export declare function createShutdownTrigger(onDone: () => void, getDb?: () => DatabaseType | undefined): () => void;
 //# sourceMappingURL=shutdown.d.ts.map

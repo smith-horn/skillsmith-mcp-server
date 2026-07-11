@@ -35,6 +35,10 @@
 import { dispatchToolCall } from './tool-dispatch.js';
 import { resolveAgentMarker, runWithMarkerContext, runWithEmissionGate, } from '@skillsmith/core/telemetry';
 import { resolveConsent, annotateResponseWithConsent, wasConsentPrompted, markConsentPrompted, } from './middleware/telemetry-consent.js';
+// SMI-5573/5582: one-shot first-run welcome message injection. Called
+// UNCONDITIONALLY on every dispatched response (see below) — the annotator
+// internally declines to consume the pending message on an error envelope.
+import { annotateResponseWithWelcome } from './middleware/first-run-welcome.js';
 /**
  * Success-only consent annotation (plan H-1 / H-2): splice `consent_required`
  * + `privacy_url` into a SUCCESS envelope, at most once per process per
@@ -87,11 +91,25 @@ export async function handleCallToolRequest(request, deps) {
         // call for a given anonymousId, zero-cost after.
         const consent = await resolveConsent(toolContext.distinctId);
         const result = await runWithEmissionGate(consent.enabled, () => runWithMarkerContext(resolveAgentMarker(requestMeta), () => dispatchToolCall(name, args, toolContext, licenseMiddleware, quotaMiddleware)));
-        // Success-envelopes ONLY (plan H-1) — matches the sole existing
-        // precedent (`license.gate.ts` annotates `ok(handlerResult)` only).
-        // Every error envelope — validation, quota -32050, profile_incomplete
-        // -32001, gated-tool errors — stays byte-identical.
-        return result.isError ? result : maybeAnnotate(result, consent, toolContext.distinctId);
+        // SMI-5573/5582: splice the pending first-run welcome message
+        // (welcome_message + tier1_install_failures) FIRST, unconditionally.
+        // annotateResponseWithWelcome is a cheap no-op when nothing is pending and,
+        // critically, leaves an error envelope untouched WITHOUT consuming the
+        // pending state — so we call it even on the error path (unlike the
+        // success-only consent annotation) precisely so a transient first-call
+        // failure re-delivers the welcome on the next success.
+        const withWelcome = annotateResponseWithWelcome(result);
+        // Consent stays success-envelopes ONLY (plan H-1) — matches the sole
+        // existing precedent (`license.gate.ts` annotates `ok(handlerResult)`
+        // only). Chained off `withWelcome`; the two annotators touch disjoint
+        // top-level JSON fields (welcome_message/tier1_install_failures vs
+        // consent_required/privacy_url), so neither clobbers the other. Every error
+        // envelope — validation, quota -32050, profile_incomplete -32001,
+        // gated-tool errors — stays byte-identical apart from the welcome splice
+        // (which no-ops on error).
+        return withWelcome.isError
+            ? withWelcome
+            : maybeAnnotate(withWelcome, consent, toolContext.distinctId);
     }
     catch (error) {
         // SMI-4313: Validation now runs through `safeParseOrError` at every

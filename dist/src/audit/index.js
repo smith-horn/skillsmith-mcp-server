@@ -15,6 +15,12 @@
 export { bootstrapUnmanagedSkills, detectCollisions, detectExactCollisions, detectGenericTokenFlags, getLastBootstrapWarnings, isUnmanagedSkill, } from './collision-detector.js';
 export { deriveCollisionId, hasClaudeMdEntries, newAuditId, readAuditHistory, writeAuditHistory, } from './audit-history.js';
 export { renderAuditReport, writeAuditReport } from './audit-report-writer.js';
+// SMI-5541 Wave 2C — local security audit (client-side rug-pull / hostile-update
+// producer that feeds the shipped 2A comparator; content is client-only per ADR-124).
+export { runSecurityAudit } from './security-audit.js';
+export { defaultBaselinePath, loadSecurityBaseline, saveSecurityBaseline, SECURITY_BASELINE_VERSION, } from './security-baseline.js';
+// SMI-5541 Wave 2C Stage 2 — continuous-audit email digest push orchestrator.
+export { buildAuditDigestPayload, hashDigest, maybeAutoNotifyAudit, MAX_DIGEST_FINDINGS, } from './audit-notify.js';
 export { emitAuditCompleteEvent } from '../tools/namespace-audit/telemetry.js';
 // SMI-4588 Wave 2 PR #1 — namespace-overrides ledger surface.
 export { appendOverride, findOverride, readLedger, readLedgerResult, writeLedger, } from './namespace-overrides.js';
@@ -41,4 +47,6 @@ export { claudeCodeAdapter, FrameworkAdapterError } from './framework-adapter.js
 // command.
 export { runInventoryAudit } from './run-inventory-audit.js';
 export { readAuditSuggestions, writeAuditSuggestions } from './audit-suggestions.js';
+// SMI-5535 Wave 2B — rot detector (dead-ref / version-drift scan).
+export { detectRot } from './rot-detector.js';
 //# sourceMappingURL=index.js.map

@@ -65,12 +65,19 @@ export function formatRecommendations(response) {
     if (response.recommendations.length === 0) {
         lines.push('No recommendations found.');
         lines.push('');
-        lines.push('Suggestions:');
-        lines.push('  - Try adding more installed skills for better matching');
-        lines.push('  - Provide a project context for more relevant results');
-        // SMI-1631: Suggest removing role filter if one was applied
-        if (response.context.role_filter) {
-            lines.push(`  - Try removing the role filter (currently: ${response.context.role_filter})`);
+        // SMI-5556: prefer the response's own suggestion (surfaced through the raw
+        // MCP JSON too) over re-deriving the same guidance here.
+        if (response.suggestion) {
+            lines.push(response.suggestion);
+        }
+        else {
+            lines.push('Suggestions:');
+            lines.push('  - Try adding more installed skills for better matching');
+            lines.push('  - Provide a project context for more relevant results');
+            // SMI-1631: Suggest removing role filter if one was applied
+            if (response.context.role_filter) {
+                lines.push(`  - Try removing the role filter (currently: ${response.context.role_filter})`);
+            }
         }
     }
     else {
@@ -82,6 +89,24 @@ export function formatRecommendations(response) {
             lines.push(`${index + 1}. ${rec.name} ${trustBadge}${rolesDisplay}`);
             lines.push(`   Score: ${rec.quality_score}/100 | Relevance: ${Math.round(rec.similarity_score * 100)}%`);
             lines.push(`   ${rec.reason}`);
+            // SMI-5562: description snippet — mirrors SkillSearchResult's description
+            // line so `skillsmith recommend` CLI users get the same "value to my
+            // project" substance the tool description asks the calling agent to narrate.
+            if (rec.description) {
+                lines.push(`   ${rec.description}`);
+            }
+            // SMI-5562: safety line, shown only when a security summary exists.
+            // Absent (undefined) means never scanned — say nothing here rather than
+            // print a placeholder that could read as either safe or unsafe; the tool
+            // description instructs the calling agent to state that explicitly instead.
+            if (rec.security) {
+                const securityStatus = rec.security.passed === true
+                    ? 'PASS'
+                    : rec.security.passed === false
+                        ? 'FAIL (' + (rec.security.riskScore ?? '?') + '/100)'
+                        : 'Scanned, no verdict yet';
+                lines.push(`   Security: ${securityStatus}`);
+            }
             lines.push(`   ID: ${rec.skill_id}`);
             lines.push('');
         });

@@ -9,17 +9,28 @@ import { InMemoryQuotaStorage, getWarningLevel, getWarningMessage, getCustomerId
 /**
  * Tier quota limits (API calls per month)
  * -1 represents unlimited
+ * SMI-5558: reduced 10x (community was 1_000, individual was 10_000, team was 100_000).
  */
 const TIER_QUOTAS = {
-    community: 1_000,
-    individual: 10_000,
-    team: 100_000,
+    community: 100,
+    individual: 1_000,
+    team: 10_000,
     enterprise: -1, // Unlimited
 };
 /**
  * Configuration for the upgrade URL
  */
 const UPGRADE_URL = 'https://skillsmith.app/upgrade';
+/**
+ * SMI-5558 kill-switch: whether over-quota requests are actually hard-blocked.
+ * Defaults to enforcing (`true`) — matches the pre-existing unconditional
+ * hard-block behavior of this middleware. Set `SKILLSMITH_ENFORCE_MCP_QUOTA=false` to
+ * disable blocking (usage is still tracked and reported) without a redeploy,
+ * e.g. if the reduced quotas cause unexpected paid-tier disruption.
+ */
+function isQuotaEnforcementEnabled() {
+    return process.env.SKILLSMITH_ENFORCE_MCP_QUOTA !== 'false';
+}
 // ============================================================================
 // Quota Middleware Factory
 // ============================================================================
@@ -86,6 +97,23 @@ export function createQuotaMiddleware(options = {}) {
         const newUsed = currentUsed + defaultCost;
         // Check if quota would be exceeded
         if (newUsed > limit) {
+            const enforced = isQuotaEnforcementEnabled();
+            // Kill-switch disabled: still track usage and report over-quota status,
+            // but let the call through instead of hard-blocking (SMI-5558).
+            if (!enforced) {
+                await storage.incrementUsage(effectiveCustomerId, defaultCost);
+                const percentUsed = (newUsed / limit) * 100;
+                return {
+                    allowed: true,
+                    remaining: Math.max(0, limit - newUsed),
+                    limit,
+                    percentUsed,
+                    warningLevel: 100,
+                    resetAt: usage.periodEnd,
+                    message: getWarningMessage(100, newUsed, limit, tier),
+                    upgradeUrl: `${UPGRADE_URL}?reason=quota_exceeded&tier=${tier}`,
+                };
+            }
             const percentUsed = (currentUsed / limit) * 100;
             return {
                 allowed: false,
@@ -134,7 +162,9 @@ export function createQuotaMiddleware(options = {}) {
         const percentUsed = (usage.used / limit) * 100;
         const warningLevel = getWarningLevel(percentUsed);
         return {
-            allowed: usage.used < limit,
+            // SMI-5558: kill-switch disabled → report allowed even over quota,
+            // mirroring checkAndTrack's enforcement decision.
+            allowed: usage.used < limit || !isQuotaEnforcementEnabled(),
             remaining: Math.max(0, limit - usage.used),
             limit,
             percentUsed,

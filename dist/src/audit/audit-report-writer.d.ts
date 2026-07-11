@@ -13,7 +13,8 @@
  *   3. Exact collisions — each lists involved entries with absolute paths
  *   4. Generic flags — matched tokens, suggested rename if any
  *   5. Semantic collisions — cosine score, overlapping phrases
- *   6. Recommended edits — Wave 3 plumbing; Wave 1 emits a placeholder
+ *   6. Rot / dead references (SMI-5535 Wave 2B) — only when non-empty
+ *   7. Recommended edits — Wave 3 plumbing; Wave 1 emits a placeholder
  *
  * Wave 2/4 import this writer via `@skillsmith/mcp-server/audit` (Step 9
  * barrel).
@@ -21,6 +22,7 @@
 import type { InventoryAuditResult } from './collision-detector.types.js';
 import type { RenameSuggestion } from './rename-engine.types.js';
 import type { RecommendedEdit } from './edit-suggester.types.js';
+import type { RotFinding } from './rot-detector.types.js';
 export interface AuditReportRenderOptions {
     /**
      * Override the report's "Generated" timestamp. Defaults to a fresh
@@ -55,6 +57,22 @@ export interface AuditReportRenderOptions {
      * `runEditSuggester`'s output entirely.
      */
     recommendedEdits?: ReadonlyArray<RecommendedEdit>;
+    /**
+     * Rot findings (SMI-5535 Wave 2B — dead-ref / version-drift signals).
+     * When provided AND non-empty, the writer renders a "Rot / dead
+     * references" section listing each finding's entry + reason. Pass
+     * nothing (or an empty array) to omit the section entirely.
+     *
+     * Also feeds the summary header's "Total flags" / "Warnings" totals
+     * (MEDIUM-2 fix): `result.summary` is computed by the collision
+     * detector alone and has no knowledge of this pass, so without this
+     * the header would print stale collision-only totals (e.g. "Total
+     * flags: 0") directly above a populated "Rot / dead references"
+     * section. `renderSummaryHeader` derives the warning-count contribution
+     * from this same array (`severity === 'warning'`), so the header can
+     * never disagree with the rendered section.
+     */
+    rotFindings?: ReadonlyArray<RotFinding>;
 }
 export interface AuditReportWriteOptions extends AuditReportRenderOptions {
     /**

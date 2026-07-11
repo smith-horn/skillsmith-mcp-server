@@ -3,7 +3,7 @@
  * @module @skillsmith/mcp-server/tools/recommend.types
  */
 import { z } from 'zod';
-import { type MCPTrustTier as TrustTier, type SkillRole } from '@skillsmith/core';
+import { type MCPTrustTier as TrustTier, type SkillRole, type SecuritySummary } from '@skillsmith/core';
 /**
  * SMI-1631: Type-safe Zod schema for skill roles
  */
@@ -73,6 +73,22 @@ export interface SkillRecommendation {
      * False for discovery-only entries (no repo_url); absent means unknown/assumed installable.
      */
     installable?: boolean;
+    /**
+     * SMI-5562: Skill description, giving the calling agent enough substance to
+     * explain the value of installing this skill (beyond the templated `reason`
+     * string). Populated on all three construction paths — `|| ''`/`?? ''`
+     * convention matches SkillSearchResult's `description: string` for parity.
+     */
+    description?: string;
+    /**
+     * SMI-5562: Security scan summary — parity with SkillSearchResult.security.
+     * `undefined` means "never scanned" (disk-scanned local skills are never
+     * registry-scanned, so absence is the honest signal there too) — this is
+     * distinct from `security.passed === null` ("scanned, no verdict yet").
+     * Never coerce/default `riskScore`/`scannedAt` to a fabricated value for an
+     * unscanned skill; that would read as "confirmed safe."
+     */
+    security?: SecuritySummary;
 }
 /**
  * Recommendation response with timing info
@@ -91,6 +107,12 @@ export interface RecommendResponse {
      * Pass installable_only: false to include them.
      */
     discovery_only_hidden?: number;
+    /**
+     * SMI-5556: present only when `recommendations` is empty. Clarifies that
+     * candidates_considered: 0 does not indicate a registry/backend fault, and
+     * suggests next steps (e.g. falling back to the `search` tool).
+     */
+    suggestion?: string;
     /** Query context used for matching */
     context: {
         installed_count: number;
@@ -182,5 +204,13 @@ export interface SkillData {
     roles: SkillRole[];
     /** SMI-1632: Whether this is an installable skill (vs a collection) */
     installable: boolean;
+    /** Risk score from 0-100 (lower is safer); null until first scan */
+    riskScore: number | null;
+    /** Number of security findings (0 is a legitimate default either way) */
+    securityFindingsCount: number;
+    /** ISO 8601 timestamp of last security scan; null until first scan */
+    securityScannedAt: string | null;
+    /** Whether the skill passed security scan; null when never scanned */
+    securityPassed: boolean | null;
 }
 //# sourceMappingURL=recommend.types.d.ts.map

@@ -57,15 +57,24 @@
  * round-trips through a marker file without crashing, i.e. the round-trip
  * half of the SMI-5456 fix, not the emission half.
  */
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AGENT_TOOL_PROFILE_NAMES } from '@skillsmith/core';
 import { resolveAgentMarker } from '@skillsmith/core/telemetry';
-import { baseSpawnEnv, connectHarness, createIsolatedHome, ensureDistBuilt, HARNESS_CASES, writeAgentMarkerFile, } from './agent-harness-sim.helpers.js';
+import { baseSpawnEnv, connectHarness, createIsolatedHome, DIST_ENTRY, ensureDistBuilt, HARNESS_CASES, writeAgentMarkerFile, } from './agent-harness-sim.helpers.js';
 const AGENT_PROFILE_SET = new Set(AGENT_TOOL_PROFILE_NAMES);
-describe('SMI-5456 L2a — agent harness-simulation MCP client', () => {
+// SMI-5548: a local pre-push run has no built dist/ (worktrees never build
+// one, and the build itself fails there — EINVAL on the worktree's
+// node_modules symlink under Docker). Skip this whole spawn-based suite ONLY
+// in that combination; CI never sets SKILLSMITH_PREPUSH, so it always builds
+// dist and runs the suite for real, failing loudly on a build-order regression.
+const skipInPrePush = process.env['SKILLSMITH_PREPUSH'] === '1' && !existsSync(DIST_ENTRY);
+if (skipInPrePush) {
+    console.warn('[SMI-5548] skipping spawn integration in pre-push (dist absent; covered by CI)');
+}
+describe.skipIf(skipInPrePush)('SMI-5456 L2a — agent harness-simulation MCP client', () => {
     beforeAll(() => {
         ensureDistBuilt();
     }, 120_000);

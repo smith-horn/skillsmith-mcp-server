@@ -18,6 +18,12 @@ export { deriveCollisionId, hasClaudeMdEntries, newAuditId, readAuditHistory, wr
 export type { AuditHistoryOptions, WriteAuditHistoryResult } from './audit-history.js';
 export { renderAuditReport, writeAuditReport } from './audit-report-writer.js';
 export type { AuditReportRenderOptions, AuditReportWriteOptions, AuditReportWriteResult, } from './audit-report-writer.js';
+export { runSecurityAudit } from './security-audit.js';
+export type { RunSecurityAuditOptions, RunSecurityAuditResult, SecurityAuditFinding, SecurityAuditSummary, SecurityVerdict, } from './security-audit.types.js';
+export { defaultBaselinePath, loadSecurityBaseline, saveSecurityBaseline, SECURITY_BASELINE_VERSION, } from './security-baseline.js';
+export type { SecurityBaseline, SecurityBaselineEntry, StoredScanReport, } from './security-baseline.js';
+export { buildAuditDigestPayload, hashDigest, maybeAutoNotifyAudit, MAX_DIGEST_FINDINGS, } from './audit-notify.js';
+export type { MaybeAutoNotifyOptions, MaybeAutoNotifyResult } from './audit-notify.js';
 export { emitAuditCompleteEvent } from '../tools/namespace-audit/telemetry.js';
 export type { AuditCompleteContext, AuditCompleteTelemetryOptions, } from '../tools/namespace-audit/telemetry.js';
 export type { AuditId, CollisionId, ExactCollisionFlag, GenericTokenFlag, InventoryAuditResult, SemanticCollisionFlag, } from './collision-detector.types.js';
@@ -43,4 +49,6 @@ export { runInventoryAudit } from './run-inventory-audit.js';
 export type { RunInventoryAuditOptions, RunInventoryAuditResult } from './run-inventory-audit.js';
 export { readAuditSuggestions, writeAuditSuggestions } from './audit-suggestions.js';
 export type { AuditSuggestionsFile, AuditSuggestionsOptions } from './audit-suggestions.js';
+export { detectRot } from './rot-detector.js';
+export type { DetectRotOptions, RotFinding, RotSignal } from './rot-detector.types.js';
 //# sourceMappingURL=index.d.ts.map

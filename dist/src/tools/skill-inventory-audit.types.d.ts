@@ -13,6 +13,7 @@
 import type { ExactCollisionFlag, GenericTokenFlag, InventoryEntry, SemanticCollisionFlag } from '../audit/collision-detector.types.js';
 import type { RecommendedEdit } from '../audit/edit-suggester.types.js';
 import type { RenameSuggestion } from '../audit/rename-engine.types.js';
+import type { RotFinding } from '../audit/rot-detector.types.js';
 /**
  * Input for the `skill_inventory_audit` MCP tool. All fields optional;
  * the Zod schema (in `skill-inventory-audit.ts`) refines `homeDir` to
@@ -54,6 +55,8 @@ export interface SkillInventoryAuditResponse {
     semanticCollisions: SemanticCollisionFlag[];
     renameSuggestions: RenameSuggestion[];
     recommendedEdits: RecommendedEdit[];
+    /** Rot findings (SMI-5535 Wave 2B) — dead-ref / version-drift signals. */
+    rotFindings: RotFinding[];
     /** Absolute path to `~/.skillsmith/audits/<auditId>/report.md`. */
     reportPath: string;
     summary: {

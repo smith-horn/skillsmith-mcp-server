@@ -7,7 +7,6 @@
  * @see SMI-XXXX: First-run integration and documentation delivery
  */
 import { createRequire } from 'node:module';
-import { exec } from 'child_process';
 // ESM-compatible require for dynamic module resolution
 const require = createRequire(import.meta.url);
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -17,7 +16,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { getToolContextAsync } from './context.js';
 import { searchToolSchema } from './tools/search.js';
 import { getSkillToolSchema } from './tools/get-skill.js';
-import { installTool, installSkill } from './tools/install.js';
+import { installTool } from './tools/install.js';
 import { uninstallTool } from './tools/uninstall.js';
 import { recommendToolSchema } from './tools/recommend.js';
 import { validateToolSchema } from './tools/validate.js';
@@ -47,9 +46,16 @@ import { handleCallToolRequest } from './call-tool-handler.js';
 // builder gates `apply_recommended_edit` on APPLY_TEMPLATE_REGISTRY and
 // omits the already-registered `skill_audit` / `skill_pack_audit`.
 import { newAuditToolDefinitions } from './audit-tool-dispatch.js';
+// SMI-5541 Wave 2C Stage 2 — background continuous-audit email digest.
+import { maybeAutoNotifyAudit } from './audit/audit-notify.js';
 // SMI-5407: skill_recover_source — Community read-only provenance tool
 import { provenanceToolDefinitions } from './provenance-tool-dispatch.js';
-import { isFirstRun, markFirstRunComplete, getWelcomeMessage, TIER1_SKILLS, } from './onboarding/first-run.js';
+import { isFirstRun, markFirstRunComplete } from './onboarding/first-run.js';
+// SMI-5582: Tier-1 registry install + self-heal orchestration. Heavy logic
+// (state-file I/O, the timeout-guarded install loop, welcome-message
+// composition) lives in this sibling to keep index.ts under the 500-LOC gate.
+// Re-exported below for integration testability (plan G).
+import { maybeInstallMissingTier1Skills } from './onboarding/tier1-self-heal.js';
 import { checkForUpdates, formatUpdateNotification } from '@skillsmith/core';
 // SMI-5456: agent-mediation marker channel — resolution + AsyncLocalStorage
 // scoping now live in call-tool-handler.js (SMI-5479 extraction).
@@ -61,6 +67,9 @@ import { createShutdownTrigger } from './shutdown.js';
 // The call site (before server.connect) is unchanged; only the implementation
 // moved so doc-retrieval-mcp + cli can share the same audited probe contract.
 import { probeEmbeddingCapability } from '@skillsmith/core/embeddings/probe';
+// SMI-5615: shared logger — error/warn mirror to console unconditionally
+// (safe console.error/warn swap); info/debug are disk-only by default.
+import { createLogger } from '@skillsmith/core/logging';
 import { createLicenseMiddleware } from './middleware/license.js';
 import { createQuotaMiddleware } from './middleware/quota.js';
 import { resolveStartupFlag } from './cli-flags.js';
@@ -69,9 +78,11 @@ import { resolveStartupFlag } from './cli-flags.js';
 // see middleware/toolProfile.ts for the full contract.
 import { filterToolsForAgentProfile } from './middleware/toolProfile.js';
 // Package version - keep in sync with package.json
-const PACKAGE_VERSION = '0.7.0';
+const PACKAGE_VERSION = '0.7.1';
 const PACKAGE_NAME = '@skillsmith/mcp-server';
-import { installBundledSkills, installUserDocs, getUserGuidePath, } from './onboarding/install-assets.js';
+const logger = createLogger('mcp', { version: PACKAGE_VERSION }); // SMI-5615
+import { installBundledSkills, installUserDocs } from './onboarding/install-assets.js';
+import { handleDocsFlag, ensureSkillsmithSkillInstalled } from './index.startup-helpers.js';
 // SMI-2679: Quota enforcement middleware — module-level singletons, initialized once
 // licenseMiddleware uses a cache (TTL) so the first-call @skillsmith/enterprise lazy-load
 // latency (~10-50ms) is not incurred on every tool invocation.
@@ -160,69 +171,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 // `undefined`. See call-tool-handler.ts's module doc (LATE-BINDING TRAP).
 server.setRequestHandler(CallToolRequestSchema, (request) => handleCallToolRequest(request, { toolContext, licenseMiddleware, quotaMiddleware }));
 /**
- * Handle --docs flag to open user documentation
- */
-function handleDocsFlag() {
-    const userGuidePath = getUserGuidePath();
-    const onlineDocsUrl = 'https://skillsmith.app/docs';
-    if (userGuidePath) {
-        const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-        exec(`${cmd} "${userGuidePath}"`);
-        console.log(`Opening documentation: ${userGuidePath}`);
-    }
-    else {
-        const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-        exec(`${cmd} "${onlineDocsUrl}"`);
-        console.log(`Opening online documentation: ${onlineDocsUrl}`);
-    }
-    process.exit(0);
-}
-/**
- * SMI-4790: Idempotent install of the bundled `skillsmith` slash-command skill
- * for MCP-only users (who never ran `skillsmith setup`) and recovery if the
- * skill was uninstalled. Delegates routing to the existing
- * `installBundledSkills()` which honours the SKILLSMITH_CLIENT env var via
- * `resolveClientPath()` (Claude Code default; cursor/copilot/windsurf via env).
+ * SMI-5582: run only the SYNCHRONOUS, zero-network part of first-time setup —
+ * install bundled first-party assets + docs and flip the first-run marker. Kept
+ * on the blocking startup path (fast, no network) so `isFirstRun()` flips to
+ * false immediately. The Tier-1 REGISTRY install (real network) runs
+ * fire-and-forget via `maybeInstallMissingTier1Skills` in `main()`, never here.
+ * Exported for integration testability (plan G).
  *
- * Quiet by design: `installBundledSkills()` only logs when it actually copies
- * a skill or hits an error, so happy-path startup adds zero stderr.
+ * @returns Names of the bundled skills freshly installed (credited, without
+ *   attribution, in the welcome message).
  */
-function ensureSkillsmithSkillInstalled() {
-    try {
-        installBundledSkills();
-    }
-    catch (error) {
-        // Fail-soft: never block MCP startup on bundled-skill install failure.
-        console.error('[skillsmith] Bundled skill install failed (non-fatal):', error instanceof Error ? error.message : 'Unknown error');
-    }
-}
-/**
- * Run first-time setup: install bundled skills and Tier 1 skills from registry
- */
-async function runFirstTimeSetup() {
+export async function runFirstTimeSetup() {
+    // SMI-5615: plain console.error (not disk-only logger.info) — always-visible docker-logs status line.
     console.error('[skillsmith] First run detected, installing essentials...');
-    // Install bundled skills (skillsmith documentation skill)
     const bundledSkills = installBundledSkills();
-    // Install user documentation
     installUserDocs();
-    // Install Tier 1 skills from registry
-    const registrySkills = [];
-    for (const skill of TIER1_SKILLS) {
-        try {
-            await installSkill({ skillId: skill.id, force: false, skipScan: false, skipOptimize: false, confirmed: true }, toolContext);
-            registrySkills.push(skill.name);
-            console.error(`[skillsmith] Installed: ${skill.name}`);
-        }
-        catch (error) {
-            console.error(`[skillsmith] Failed to install ${skill.name}:`, error instanceof Error ? error.message : 'Unknown error');
-        }
-    }
-    // Mark first run as complete
+    // Mark complete BEFORE the async registry install kicks off, so isFirstRun()
+    // flips regardless of registry outcome.
     markFirstRunComplete();
-    // Show welcome message
-    const allSkills = [...bundledSkills, ...registrySkills];
-    console.error(getWelcomeMessage(allSkills));
+    return bundledSkills;
 }
+// SMI-5582 (plan G): re-export so integration tests can drive it directly.
+export { maybeInstallMissingTier1Skills };
 /**
  * SMI-2163: Startup diagnostics for common installation issues
  * Detects native module problems and provides actionable error messages
@@ -237,7 +207,7 @@ function runStartupDiagnostics() {
     catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes('NODE_MODULE_VERSION')) {
-            console.error(`
+            logger.error(`
 ╔══════════════════════════════════════════════════════════════╗
 ║  Skillsmith: Native Module Version Mismatch                  ║
 ╠══════════════════════════════════════════════════════════════╣
@@ -259,7 +229,7 @@ function runStartupDiagnostics() {
             process.exit(1);
         }
         if (msg.includes('GLIBC') || msg.includes('libc') || msg.includes('GLIBCXX')) {
-            console.error(`
+            logger.error(`
 ╔══════════════════════════════════════════════════════════════╗
 ║  Skillsmith: Missing System Library (glibc)                  ║
 ╠══════════════════════════════════════════════════════════════╣
@@ -276,7 +246,7 @@ function runStartupDiagnostics() {
             process.exit(1);
         }
         if (msg.includes('invalid ELF header')) {
-            console.error(`
+            logger.error(`
 ╔══════════════════════════════════════════════════════════════╗
 ║  Skillsmith: Architecture Mismatch                           ║
 ╠══════════════════════════════════════════════════════════════╣
@@ -298,7 +268,7 @@ function runStartupDiagnostics() {
         }
         // Unknown module resolution error - log but don't exit
         // The actual error will surface when the module is used
-        console.error(`[Skillsmith] Warning: Could not resolve @skillsmith/core: ${msg}`);
+        logger.warn(`[Skillsmith] Warning: Could not resolve @skillsmith/core: ${msg}`);
     }
 }
 // SMI-5009 (origin) / SMI-5039 (extraction): the embedding capability probe
@@ -311,7 +281,7 @@ function runStartupDiagnostics() {
 // so this explicitly exits once the bounded flush settles, preserving
 // today's default (process exits promptly on those signals) instead of
 // leaving the process hanging.
-const shutdownAndExit = createShutdownTrigger(() => process.exit(0));
+const shutdownAndExit = createShutdownTrigger(() => process.exit(0), () => toolContext?.db);
 // Start server
 async function main() {
     // SMI-4805: --version / --help must short-circuit before diagnostics, DB
@@ -333,22 +303,27 @@ async function main() {
     // CRITICAL: Must complete before any tool handlers access toolContext
     try {
         toolContext = await getToolContextAsync();
-        console.error('Database initialized at:', process.env.SKILLSMITH_DB_PATH || '~/.skillsmith/skills.db');
+        // SMI-5615: plain console.error — same rationale as runFirstTimeSetup above.
+        console.error(`Database initialized at: ${process.env.SKILLSMITH_DB_PATH || '~/.skillsmith/skills.db'}`);
     }
     catch (error) {
-        console.error('[skillsmith] Failed to initialize database:');
-        console.error(error instanceof Error ? error.message : error);
-        console.error('');
-        console.error('Troubleshooting:');
-        console.error('  - In Docker: Ensure container is running');
-        console.error('  - On macOS: sql.js WASM should load automatically');
-        console.error('  - Set SKILLSMITH_FORCE_WASM=true to use the WASM SQLite fallback');
-        console.error('');
+        const errorDetail = error instanceof Error ? error.message : String(error);
+        // SMI-5615: single '\n'-joined message reproduces the prior 8-line stderr output.
+        const troubleshooting = [
+            '  - In Docker: Ensure container is running',
+            '  - On macOS: sql.js WASM should load automatically',
+            '  - Set SKILLSMITH_FORCE_WASM=true to use the WASM SQLite fallback',
+        ].join('\n');
+        logger.error(`[skillsmith] Failed to initialize database:\n${errorDetail}\n\nTroubleshooting:\n${troubleshooting}\n`, { err: error });
         process.exit(1);
     }
-    // Run first-time setup if needed
+    // Run the synchronous (zero-network) part of first-time setup if needed.
+    // `bundledSkills` are credited (without attribution) in the welcome message;
+    // on a non-first-run self-heal there are none freshly installed here, so the
+    // welcome message then lists only the registry skills.
+    let bundledSkills = [];
     if (isFirstRun()) {
-        await runFirstTimeSetup();
+        bundledSkills = await runFirstTimeSetup();
     }
     else {
         // SMI-4790: ensure the bundled `skillsmith` slash-command skill is installed
@@ -360,18 +335,33 @@ async function main() {
             ensureSkillsmithSkillInstalled();
         }
     }
+    // SMI-5582: Tier-1 registry install + self-heal. Runs on EVERY startup (not
+    // just first-run) so users already past markFirstRunComplete() with the old
+    // broken IDs get healed; it reconciles a persisted status file, retrying only
+    // still-missing skills (≤1×/24h). FIRE-AND-FORGET (never awaited) — mirrors
+    // checkForUpdates() below so a slow, now-timeout-guarded GitHub fetch cannot
+    // delay server.connect(). Opt out via SKILLSMITH_TIER1_AUTOINSTALL_DISABLE=1
+    // (registry path only; bundled assets above unaffected). Never throws.
+    void maybeInstallMissingTier1Skills(toolContext, { bundledSkills }).catch(() => { });
     // SMI-1952: Auto-update check (non-blocking)
     if (process.env.SKILLSMITH_AUTO_UPDATE_CHECK !== 'false') {
         checkForUpdates(PACKAGE_NAME, PACKAGE_VERSION)
             .then((result) => {
             if (result?.updateAvailable) {
-                console.error(formatUpdateNotification(result));
+                console.error(formatUpdateNotification(result)); // SMI-5615: plain console.error, not disk-only logger.info
             }
         })
             .catch(() => {
             // Silent failure - don't block server startup
         });
     }
+    // SMI-5541: continuous personal audit — throttled (≤1×/day), deduped, and
+    // consent-gated SERVER-side. Fire-and-forget: maybeAutoNotifyAudit never
+    // throws (all errors swallowed internally), so it cannot block or crash
+    // startup. Opt out with SKILLSMITH_AUDIT_EMAIL_DISABLE=1.
+    maybeAutoNotifyAudit().catch(() => {
+        // Defensive: the helper already swallows everything; this is belt-and-braces.
+    });
     // SMI-5009: probe embedding capability BEFORE serving any requests so the
     // module-load cache is warm and the first user search request doesn't race
     // with cold transformers initialisation. Probe is hard-bounded at 2s and
@@ -385,7 +375,16 @@ async function main() {
     process.on('SIGTERM', shutdownAndExit);
     process.on('SIGINT', shutdownAndExit);
     await server.connect(transport);
+    // SMI-5615: plain console.error — startup-probe.test.ts waits on this exact stderr line.
     console.error('Skillsmith MCP server running');
 }
-main().catch(console.error);
+// SMI-5615: was `main().catch(console.error)` — handled, so it exited 0 with
+// no diagnostic beyond the console line. `logger.error` mirrors to
+// console.error unconditionally (same stderr visibility) plus a disk record;
+// `process.exit(1)` fixes the latent success-exit-code-on-failure gap.
+main().catch((error) => {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    logger.error(`Fatal error during startup: ${detail}`, { err: error });
+    process.exit(1);
+});
 //# sourceMappingURL=index.js.map

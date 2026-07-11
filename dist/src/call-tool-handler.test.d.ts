@@ -9,6 +9,12 @@
  * Plus: once-per-process consent annotation (Option A), error envelopes
  *      never annotated, `inventory_push` prose-body fail-open no-annotate.
  *
+ * First-run welcome message annotation (SMI-5573/5582) coverage — one-shot
+ * delivery, error envelopes never consuming the pending message, and
+ * composition with the consent annotator on the same response — lives in
+ * the sibling call-tool-handler.welcome.test.ts (split out to stay under
+ * the 500-line/file cap).
+ *
  * Observation seam (plan pass-2, matches
  * `middleware/__tests__/license.gate.test.ts`'s T2 block): `wrap.ts` (inside
  * `@skillsmith/core`) calls its own module-local `./posthog.js` binding, so

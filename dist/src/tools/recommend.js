@@ -10,11 +10,10 @@
 import { SkillMatcher, OverlapDetector, trackEvent } from '@skillsmith/core';
 import { withTelemetry } from '@skillsmith/core/telemetry';
 import { getInstalledSkills } from '../utils/installed-skills.js';
-import { mapTrustTierFromDb } from '../utils/validation.js';
 // Import types
 import { recommendInputSchema, } from './recommend.types.js';
 // Import helpers
-import { inferRolesFromTags, loadSkillsFromDatabase, isSkillCollection, } from './recommend.helpers.js';
+import { loadSkillsFromDatabase, isSkillCollection, buildEmptyRecommendationSuggestion, buildLocalSkillRecommendation, buildApiRecommendation, buildDbFallbackRecommendation, } from './recommend.helpers.js';
 // SMI-2741: Formatting and deduplication extracted to companion file
 import { mergeAndDeduplicateRecommendations } from './recommend.format.js';
 // SMI-1837: Import local skill search for parallel querying
@@ -23,26 +22,6 @@ import { getLocalIndexer } from './LocalSkillSearch.js';
 export { recommendInputSchema, recommendToolSchema, } from './recommend.types.js';
 // Re-export formatting utilities (SMI-2741)
 export { formatRecommendations, mergeAndDeduplicateRecommendations } from './recommend.format.js';
-/**
- * SMI-1837: Convert a LocalSkill to SkillRecommendation format
- * @param skill - The local skill to convert
- * @param matchReason - Reason for the recommendation
- * @returns SkillRecommendation object
- */
-function localSkillToRecommendation(skill, matchReason) {
-    const roles = inferRolesFromTags(skill.tags);
-    return {
-        skill_id: skill.id,
-        name: skill.name,
-        reason: matchReason,
-        similarity_score: 0.7, // Local skills get a default similarity score
-        trust_tier: 'local',
-        quality_score: skill.qualityScore,
-        roles,
-        // SMI-5178 (C2): local skills are always installable (they live on disk).
-        installable: true,
-    };
-}
 /**
  * SMI-1837: Search local skills for recommendations
  * @param query - Search query based on context and installed skills
@@ -61,7 +40,7 @@ async function searchLocalSkillsForRecommend(query, limit) {
         // Convert to recommendations and limit
         return matchingSkills
             .slice(0, limit)
-            .map((skill) => localSkillToRecommendation(skill, `Local skill matching: ${query.split(' ').slice(0, 3).join(', ')}`));
+            .map((skill) => buildLocalSkillRecommendation(skill, `Local skill matching: ${query.split(' ').slice(0, 3).join(', ')}`));
     }
     catch (error) {
         // Log and return empty on error - don't break the main flow
@@ -114,20 +93,7 @@ async function executeRecommendImpl(input, context) {
             // Extract API results (may have failed)
             let apiRecommendations = [];
             if (apiResultSettled.status === 'fulfilled') {
-                apiRecommendations = apiResultSettled.value.data.map((skill) => {
-                    const skillRoles = inferRolesFromTags(skill.tags || []);
-                    return {
-                        skill_id: skill.id,
-                        name: skill.name,
-                        reason: `Matches your stack: ${stack.slice(0, 3).join(', ')}`,
-                        similarity_score: 0.8, // API doesn't return similarity score, use default
-                        trust_tier: mapTrustTierFromDb(skill.trust_tier),
-                        quality_score: Math.round((skill.quality_score ?? 0.5) * 100),
-                        roles: skillRoles,
-                        // SMI-5178 (C2): thread installable from the API result (repo_url present = installable).
-                        installable: skill.installable ?? skill.repo_url != null,
-                    };
-                });
+                apiRecommendations = apiResultSettled.value.data.map((skill) => buildApiRecommendation(skill, stack));
             }
             else {
                 console.warn('[skillsmith] API recommend failed:', apiResultSettled.reason.message);
@@ -172,6 +138,13 @@ async function executeRecommendImpl(input, context) {
                 overlap_filtered: 0,
                 role_filtered: roleFiltered,
                 discovery_only_hidden: discoveryOnlyHidden,
+                suggestion: recommendations.length
+                    ? undefined
+                    : buildEmptyRecommendationSuggestion({
+                        installedCount: installed_skills.length,
+                        hasProjectContext: !!project_context,
+                        roleFilter: role,
+                    }),
                 context: {
                     installed_count: installed_skills.length,
                     has_project_context: !!project_context,
@@ -286,24 +259,7 @@ async function executeRecommendImpl(input, context) {
     const matchResults = await matcher.findSimilarSkills(query, filteredCandidates, limit);
     // Transform database results to response format
     // SMI-1631: Include roles and apply +30 score boost for role matches
-    const dbRecommendations = matchResults.map((result) => {
-        const skill = result.skill;
-        const hasRoleMatch = role && skill.roles.includes(role);
-        const boostedScore = hasRoleMatch
-            ? Math.min(1, (skill.qualityScore ?? 0.5) + 0.3)
-            : (skill.qualityScore ?? 0.5);
-        return {
-            skill_id: skill.id,
-            name: skill.name,
-            reason: hasRoleMatch ? `${result.matchReason} (role: ${role})` : result.matchReason,
-            similarity_score: result.similarityScore,
-            trust_tier: skill.trustTier,
-            quality_score: Math.round(boostedScore * 100),
-            roles: skill.roles,
-            // SMI-5178 (C2): thread installable from SkillData (set by transformSkillToMatchData).
-            installable: skill.installable !== false ? true : false,
-        };
-    });
+    const dbRecommendations = matchResults.map((result) => buildDbFallbackRecommendation(result, role));
     // SMI-1837: Merge database and local results
     let recommendations = mergeAndDeduplicateRecommendations(dbRecommendations, localRecommendations, limit);
     // Apply role filtering to merged results if not already done
@@ -326,6 +282,13 @@ async function executeRecommendImpl(input, context) {
         overlap_filtered: overlapFiltered,
         role_filtered: roleFiltered,
         discovery_only_hidden: discoveryOnlyHidden,
+        suggestion: recommendations.length
+            ? undefined
+            : buildEmptyRecommendationSuggestion({
+                installedCount: installed_skills.length,
+                hasProjectContext: !!project_context,
+                roleFilter: role,
+            }),
         context: {
             installed_count: installed_skills.length,
             has_project_context: !!project_context,
