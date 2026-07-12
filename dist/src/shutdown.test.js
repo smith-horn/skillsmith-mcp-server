@@ -34,6 +34,10 @@ vi.mock('@skillsmith/core/logging', () => ({
 function createMockDb(open = true) {
     return { open, close: vi.fn() };
 }
+// SMI-5649: coordinator (runShutdownSequence), autosave
+// (persistDbIfSupported/startPeriodicFlush/stopPeriodicFlush), and the
+// single-registration-site tests moved to shutdown-coordinator.test.ts
+// (SMI-5649) to keep this file under the 500-LOC file-size gate.
 describe('flushTelemetryOnShutdown (SMI-5479)', () => {
     beforeEach(() => {
         _resetShutdownGuardForTests();
@@ -168,10 +172,12 @@ describe('closeDbOnShutdown (SMI-5639)', () => {
     });
 });
 /**
- * SMI-5639 Wave 2 Step 1 (part 2): `createShutdownTrigger`'s new `getDb`
- * wiring — the db close/persist runs SYNCHRONOUSLY, before the (async)
- * telemetry flush is even kicked off, so these assertions can check
- * `db.close()` immediately after calling `trigger()` without needing to wait.
+ * SMI-5639 Wave 2 Step 1 (part 2), updated SMI-5649: `createShutdownTrigger`'s
+ * `getDb` wiring. Since SMI-5649, the coordinator quiesces background work
+ * (an inherently async step, awaited even when no `quiesce` hook is given)
+ * BEFORE calling `closeDbOnShutdown` — so, unlike before, `db.close()` is no
+ * longer observable perfectly synchronously on the same tick as the
+ * `trigger()` call. These assertions now poll via `vi.waitFor` instead.
  */
 describe('createShutdownTrigger — getDb wiring (SMI-5639)', () => {
     beforeEach(() => {
@@ -186,11 +192,9 @@ describe('createShutdownTrigger — getDb wiring (SMI-5639)', () => {
     it('closes an open mock db when the trigger fires', async () => {
         const db = createMockDb(true);
         const onDone = vi.fn();
-        const trigger = createShutdownTrigger(onDone, () => db);
+        const trigger = createShutdownTrigger(onDone, { getDb: () => db });
         trigger();
-        // Synchronous — closeDbOnShutdown runs to completion before the trigger
-        // even kicks off flushTelemetryOnShutdown, let alone awaits it.
-        expect(db.close).toHaveBeenCalledTimes(1);
+        await vi.waitFor(() => expect(db.close).toHaveBeenCalledTimes(1));
         await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     });
     it('no-ops safely when getDb is undefined — onDone still fires via the telemetry flush', async () => {
@@ -204,7 +208,7 @@ describe('createShutdownTrigger — getDb wiring (SMI-5639)', () => {
         const getDb = vi.fn(() => {
             throw new Error('toolContext not ready');
         });
-        const trigger = createShutdownTrigger(onDone, getDb);
+        const trigger = createShutdownTrigger(onDone, { getDb });
         expect(() => trigger()).not.toThrow();
         await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     });
@@ -215,18 +219,18 @@ describe('createShutdownTrigger — getDb wiring (SMI-5639)', () => {
             throw closeError;
         });
         const onDone = vi.fn();
-        const trigger = createShutdownTrigger(onDone, () => db);
+        const trigger = createShutdownTrigger(onDone, { getDb: () => db });
         const start = Date.now();
         expect(() => trigger()).not.toThrow();
+        await vi.waitFor(() => expect(mockLogger.error).toHaveBeenCalledWith(expect.stringContaining('Failed to close database'), expect.objectContaining({ err: closeError })));
         const elapsed = Date.now() - start;
-        // closeDbOnShutdown is fully synchronous (try/catch, no await) and runs
-        // BEFORE the telemetry flush is even started, so a regression that made
-        // the close-on-error path hang (e.g. awaiting something inside the catch)
-        // would blow well past this bound. This is a distinct assertion from the
-        // telemetry flush's own 2000ms timeout bound (TELEMETRY_SHUTDOWN_FLUSH_TIMEOUT_MS) —
-        // it pins the SYNCHRONOUS close path specifically.
-        expect(elapsed).toBeLessThan(100);
-        expect(mockLogger.error).toHaveBeenCalledWith(expect.stringContaining('Failed to close database'), expect.objectContaining({ err: closeError }));
+        // The close-on-error path itself has no await inside its try/catch, so a
+        // regression that made it hang would still blow well past this bound —
+        // this is a distinct assertion from the telemetry flush's own 2000ms
+        // timeout bound (TELEMETRY_SHUTDOWN_FLUSH_TIMEOUT_MS). It no longer pins
+        // the FIRST microtask tick (quiesce now legitimately runs before close),
+        // just that the whole sequence isn't hanging.
+        expect(elapsed).toBeLessThan(500);
         await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     });
     it('same-instance reuse: calling the SAME trigger instance twice only closes the db once (db.open flips false after the first close)', async () => {
@@ -234,17 +238,18 @@ describe('createShutdownTrigger — getDb wiring (SMI-5639)', () => {
         // twice (e.g. transport.onclose firing after a signal already fired the
         // same registered listener). Cross-instance/racing-trigger scenarios —
         // two INDEPENDENTLY created triggers firing concurrently (e.g. SIGTERM
-        // racing SIGINT) — are Wave 3's manual verification scope, not this test.
+        // racing SIGINT) — are covered by the re-entrancy test below (SMI-5649
+        // made this load-bearing: a second sequence must never race the first).
         const db = createMockDb(true);
         db.close.mockImplementation(() => {
             db.open = false;
         });
         const onDone = vi.fn();
-        const trigger = createShutdownTrigger(onDone, () => db);
+        const trigger = createShutdownTrigger(onDone, { getDb: () => db });
         trigger();
         trigger();
-        expect(db.close).toHaveBeenCalledTimes(1);
         await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(2));
+        expect(db.close).toHaveBeenCalledTimes(1);
     });
 });
 /**

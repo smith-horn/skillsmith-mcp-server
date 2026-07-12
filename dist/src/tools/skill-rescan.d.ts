@@ -3,13 +3,17 @@
  * SecurityScanner patterns.
  * @module @skillsmith/mcp-server/tools/skill-rescan
  * @see SMI-3511: GAP-08 No re-scanning of installed skills
+ * @see SMI-5645: dependency backfill for skills installed before the SMI-5639
+ *   dependency-persistence fix shipped (`@skillsmith/mcp-server@0.7.1`) --
+ *   see `backfillSkillDependencies` in `./skill-rescan.helpers.ts` for the
+ *   full design rationale (current-vs-historical SKILL.md, idempotency).
  *
  * When new detection patterns are added (SSRF, split-word, homoglyph, etc.),
  * already-installed skills are never re-evaluated. This tool fills that gap
  * by reading installed SKILL.md files and running SecurityScanner against each.
  */
 import { z } from 'zod';
-import { QuarantineRepository, type QuarantineSeverity } from '@skillsmith/core';
+import { QuarantineRepository, type QuarantineSeverity, type SkillDependencyRepository } from '@skillsmith/core';
 /**
  * Input schema for skill_rescan tool
  */
@@ -69,6 +73,21 @@ export interface SkillRescanEntry {
     };
     /** Error message if skill could not be read */
     error?: string;
+    /**
+     * SMI-5645: number of `skill_dependencies` rows written (inserted or
+     * upserted) for this skill during this rescan. Reflects the CURRENTLY
+     * installed SKILL.md content, not a historical/original-install-time
+     * snapshot -- there is no such snapshot to recover (that gap is exactly
+     * what this backfill closes). A skill whose SKILL.md was edited since
+     * install backfills against the edited content; this is intentional,
+     * best-effort behavior, not a correctness bug. Idempotent: rescanning the
+     * same skill repeatedly reports the same non-zero count each time without
+     * accumulating duplicate rows (see `backfillSkillDependencies` in
+     * `./skill-rescan.helpers.ts`). Always `0` when no dependency repository
+     * is supplied to the scan, on extraction/persistence error (contained,
+     * never fails the scan), or when no dependencies are detected.
+     */
+    dependenciesBackfilled: number;
 }
 /**
  * Response from skill_rescan tool
@@ -82,6 +101,12 @@ export interface SkillRescanResponse {
     results: SkillRescanEntry[];
     /** Error message when a specific skill is not found */
     error?: string;
+    /**
+     * SMI-5645: sum of every entry's `dependenciesBackfilled` this run. See
+     * that field's doc for the current-vs-historical-SKILL.md caveat and
+     * idempotency guarantee.
+     */
+    totalDependenciesBackfilled: number;
 }
 /**
  * MCP tool definition for skill_rescan
@@ -110,20 +135,8 @@ export declare const skillRescanToolSchema: {
  * @see SMI-5358: advisory → quarantine linkage for rescan
  */
 export declare function findingsToQuarantineSeverity(hasCritical: boolean, hasHigh: boolean): QuarantineSeverity;
-/**
- * Discover installed skill directories under ~/.claude/skills/.
- *
- * Skills are installed as either:
- *   - ~/.claude/skills/{skillName}/SKILL.md
- *   - ~/.claude/skills/{author}/{skillName}/SKILL.md
- *
- * Returns an array of { name, skillMdPath } objects.
- */
-export declare function discoverInstalledSkills(skillsDir: string): Promise<Array<{
-    name: string;
-    skillMdPath: string;
-}>>;
+export { discoverInstalledSkills } from './skill-rescan.helpers.js';
 export declare const executeSkillRescan: (input: {
     skillName?: string | undefined;
-}, overrideDir?: string | undefined, quarantineRepo?: QuarantineRepository | undefined) => Promise<SkillRescanResponse>;
+}, overrideDir?: string | undefined, quarantineRepo?: QuarantineRepository | undefined, skillDependencyRepo?: SkillDependencyRepository | undefined) => Promise<SkillRescanResponse>;
 //# sourceMappingURL=skill-rescan.d.ts.map

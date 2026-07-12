@@ -3,6 +3,10 @@
  * SecurityScanner patterns.
  * @module @skillsmith/mcp-server/tools/skill-rescan
  * @see SMI-3511: GAP-08 No re-scanning of installed skills
+ * @see SMI-5645: dependency backfill for skills installed before the SMI-5639
+ *   dependency-persistence fix shipped (`@skillsmith/mcp-server@0.7.1`) --
+ *   see `backfillSkillDependencies` in `./skill-rescan.helpers.ts` for the
+ *   full design rationale (current-vs-historical SKILL.md, idempotency).
  *
  * When new detection patterns are added (SSRF, split-word, homoglyph, etc.),
  * already-installed skills are never re-evaluated. This tool fills that gap
@@ -10,12 +14,13 @@
  */
 import { z } from 'zod';
 import { promises as fs } from 'fs';
-import { join, dirname } from 'path';
-import { SecurityScanner } from '@skillsmith/core';
+import { dirname } from 'path';
+import { SecurityScanner, } from '@skillsmith/core';
 import { withTelemetry } from '@skillsmith/core/telemetry';
 import { resolveClientPath } from '@skillsmith/core/install';
 import { scanLocalBundleSiblings } from '@skillsmith/core/services/bundled-sibling-scan';
 import { parseFrontmatter } from '../indexer/FrontmatterParser.js';
+import { backfillSkillDependencies, discoverInstalledSkills } from './skill-rescan.helpers.js';
 // ============================================================================
 // Input / Output types
 // ============================================================================
@@ -74,61 +79,10 @@ export function findingsToQuarantineSeverity(hasCritical, hasHigh) {
         return 'SUSPICIOUS';
     return 'RISKY';
 }
-/**
- * Discover installed skill directories under ~/.claude/skills/.
- *
- * Skills are installed as either:
- *   - ~/.claude/skills/{skillName}/SKILL.md
- *   - ~/.claude/skills/{author}/{skillName}/SKILL.md
- *
- * Returns an array of { name, skillMdPath } objects.
- */
-export async function discoverInstalledSkills(skillsDir) {
-    const results = [];
-    let entries;
-    try {
-        entries = await fs.readdir(skillsDir);
-    }
-    catch {
-        return results;
-    }
-    for (const entry of entries) {
-        const entryPath = join(skillsDir, entry);
-        const stat = await fs.stat(entryPath).catch(() => null);
-        if (!stat?.isDirectory())
-            continue;
-        // Check for SKILL.md directly in this directory
-        const directSkillMd = join(entryPath, 'SKILL.md');
-        const directExists = await fs
-            .access(directSkillMd)
-            .then(() => true)
-            .catch(() => false);
-        if (directExists) {
-            results.push({ name: entry, skillMdPath: directSkillMd });
-            continue;
-        }
-        // Check for author/skill-name subdirectories
-        const subEntries = await fs.readdir(entryPath).catch(() => []);
-        for (const subEntry of subEntries) {
-            const subPath = join(entryPath, subEntry);
-            const subStat = await fs.stat(subPath).catch(() => null);
-            if (!subStat?.isDirectory())
-                continue;
-            const nestedSkillMd = join(subPath, 'SKILL.md');
-            const nestedExists = await fs
-                .access(nestedSkillMd)
-                .then(() => true)
-                .catch(() => false);
-            if (nestedExists) {
-                results.push({
-                    name: `${entry}/${subEntry}`,
-                    skillMdPath: nestedSkillMd,
-                });
-            }
-        }
-    }
-    return results;
-}
+// SMI-5645: discoverInstalledSkills moved to ./skill-rescan.helpers.ts to
+// keep this file under the 500-line gate; re-exported below for existing
+// callers/tests that import it from this module.
+export { discoverInstalledSkills } from './skill-rescan.helpers.js';
 // ============================================================================
 // Execution
 // ============================================================================
@@ -146,14 +100,27 @@ export async function discoverInstalledSkills(skillsDir) {
  *
  * @see SMI-5358: advisory → quarantine linkage for rescan (gap fix)
  *
+ * SMI-5645: also backfills `skill_dependencies` rows for every scanned skill
+ * via `backfillSkillDependencies` (`./skill-rescan.helpers.ts`), re-running
+ * the same extraction+persistence pipeline SMI-5639 added at install time.
+ * This always reflects the skill's CURRENTLY installed SKILL.md, not a
+ * historical/original-install-time snapshot (see that helper's doc for the
+ * full rationale) -- a best-effort, contained step that never fails the
+ * security scan.
+ *
  * @param input         Validated tool input
  * @param overrideDir   Optional skills directory override (for testing)
  * @param quarantineRepo Optional QuarantineRepository for persisting quarantine
  *                       entries when findings exceed the threshold (production
  *                       callers pass new QuarantineRepository(toolContext.db))
+ * @param skillDependencyRepo Optional SkillDependencyRepository for backfilling
+ *                       dependency intelligence (SMI-5645; production callers
+ *                       pass toolContext.skillDependencyRepository). When
+ *                       omitted, no backfill is attempted and every entry's
+ *                       `dependenciesBackfilled` is 0.
  * @returns SkillRescanResponse with per-skill scan results
  */
-async function executeSkillRescanImpl(input, overrideDir, quarantineRepo) {
+async function executeSkillRescanImpl(input, overrideDir, quarantineRepo, skillDependencyRepo) {
     // SMI-4578: defaults to SKILLSMITH_CLIENT-resolved directory; override
     // wins for ad-hoc rescan of an arbitrary path.
     const skillsDir = overrideDir ?? resolveClientPath();
@@ -171,11 +138,13 @@ async function executeSkillRescanImpl(input, overrideDir, quarantineRepo) {
                 results: [],
                 error: `Skill "${input.skillName}" not found. ` +
                     `${installedSkills.length} skill(s) currently installed.`,
+                totalDependenciesBackfilled: 0,
             };
         }
     }
     // Scan each skill
     const results = [];
+    let totalDependenciesBackfilled = 0;
     for (const skill of targetSkills) {
         let content;
         try {
@@ -190,9 +159,22 @@ async function executeSkillRescanImpl(input, overrideDir, quarantineRepo) {
                 severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
                 topFindings: [],
                 error: `Could not read ${skill.skillMdPath}`,
+                dependenciesBackfilled: 0,
             });
             continue;
         }
+        // SMI-5645: canonical local identity key, matching the same
+        // frontmatter-name-wins derivation already used for the quarantine key
+        // below (KEY PARITY note) -- shared here so both consumers key on the
+        // exact same string and only parse frontmatter once per skill.
+        const canonicalName = parseFrontmatter(content).name || skill.name;
+        const localSkillKey = `local/${canonicalName}`;
+        // SMI-5645: best-effort dependency backfill -- reflects the CURRENT
+        // on-disk SKILL.md, not a historical/original-install-time snapshot
+        // (see backfillSkillDependencies in ./skill-rescan.helpers.ts). Runs
+        // regardless of scan outcome and never throws (contained internally).
+        const dependenciesBackfilled = backfillSkillDependencies(skillDependencyRepo, localSkillKey, content);
+        totalDependenciesBackfilled += dependenciesBackfilled;
         const report = scanner.scan(skill.name, content);
         // SMI-5422 Phase 2: also scan sibling bundled files (.mcp.json, settings,
         // package.json lifecycle, config.json, scripts/*.sh). A malicious sibling —
@@ -240,6 +222,7 @@ async function executeSkillRescanImpl(input, overrideDir, quarantineRepo) {
                 lineNumber: f.lineNumber,
                 ...(f.location ? { location: f.location } : {}),
             })),
+            dependenciesBackfilled,
             ...(hasSiblingActivity
                 ? {
                     bundledSiblings: {
@@ -263,16 +246,15 @@ async function executeSkillRescanImpl(input, overrideDir, quarantineRepo) {
         // (LocalIndexer is top-level-only; indexLocalSkill derives name the same way).
         // discoverInstalledSkills yields the DIRECTORY name, so a SKILL.md whose
         // `name:` differs from its directory would be quarantined under the wrong key
-        // and silently evade the filter. Derive the canonical name from frontmatter
-        // first, mirroring LocalIndexer, then fall back to the directory name.
+        // and silently evade the filter. Reuses `localSkillKey` (computed once above,
+        // pre-scan, alongside the SMI-5645 dependency backfill) rather than
+        // re-deriving it here.
         if ((!report.passed || siblingRejected) && quarantineRepo) {
-            const canonicalName = parseFrontmatter(content).name || skill.name;
-            const skillKey = `local/${canonicalName}`;
             // Idempotent: a persistently-failing skill rescanned repeatedly must not
             // accumulate duplicate pending rows (the quarantine table has no
             // UNIQUE(skill_id, source)). Skip if already quarantined; a previously
             // APPROVED entry (isQuarantined === false) still re-quarantines as intended.
-            if (!quarantineRepo.isQuarantined(skillKey)) {
+            if (!quarantineRepo.isQuarantined(localSkillKey)) {
                 // Quarantine-driving findings: SKILL.md findings only when SKILL.md
                 // itself failed, plus the sibling execution-threat drivers. Doc-class
                 // siblings are excluded upstream and so can never reach this set (B2).
@@ -301,7 +283,7 @@ async function executeSkillRescanImpl(input, overrideDir, quarantineRepo) {
                         siblingScan.rejectableFiles.join(', '));
                 }
                 quarantineRepo.create({
-                    skillId: skillKey,
+                    skillId: localSkillKey,
                     source: 'rescan',
                     quarantineReason: `Security rescan detected ${reasonParts.join('; ')} ` +
                         `(riskScore=${Math.max(report.riskScore, siblingScan.maxSiblingRiskScore)})`,
@@ -316,6 +298,7 @@ async function executeSkillRescanImpl(input, overrideDir, quarantineRepo) {
         scannedCount: results.length,
         failedCount,
         results,
+        totalDependenciesBackfilled,
     };
 }
 // SMI-5017 W2.S2: wrap at export boundary

@@ -139,11 +139,6 @@ export async function createToolContextAsync(options = {}) {
                         console.log(`[skillsmith] Background sync complete: ${result.skillsAdded} added, ${result.skillsUpdated} updated`);
                     }
                 },
-                onSyncError: (error) => {
-                    if (options.backgroundSyncConfig?.debug) {
-                        console.error(`[skillsmith] Background sync error: ${error.message}`);
-                    }
-                },
             });
             backgroundSync.start();
         }
@@ -165,19 +160,16 @@ export async function createToolContextAsync(options = {}) {
             console.log('[skillsmith] LLM failover chain initialized');
         }
     }
-    // Create signal handlers for cleanup
-    const signalHandlers = [];
-    if (backgroundSync || llmFailover) {
-        const cleanup = () => {
-            backgroundSync?.stop();
-            llmFailover?.close();
-        };
-        const sigTermHandler = () => cleanup();
-        const sigIntHandler = () => cleanup();
-        process.on('SIGTERM', sigTermHandler);
-        process.on('SIGINT', sigIntHandler);
-        signalHandlers.push({ signal: 'SIGTERM', handler: sigTermHandler }, { signal: 'SIGINT', handler: sigIntHandler });
-    }
+    // SMI-5649: this factory no longer registers its own SIGTERM/SIGINT
+    // handlers. That was the root cause of the shutdown race — a context
+    // factory registering PROCESS-GLOBAL signal handlers on every context
+    // creation meant two independent, unordered handler sets could both fire
+    // on the same signal, racing a fire-and-forget `backgroundSync?.stop()`
+    // against `index.ts`'s db close. Signal ownership now belongs solely to
+    // `index.ts`'s single shutdown coordinator (`shutdown.ts`), which performs
+    // this same cleanup (`quiesce` + `closeLlmFailover` hooks) in a defined
+    // order. See docs/internal/implementation/mcp-shutdown-followup-hardening-wave-a-design.md
+    // §Deliverable 4.
     return {
         db,
         searchService,
@@ -189,7 +181,6 @@ export async function createToolContextAsync(options = {}) {
         distinctId,
         backgroundSync,
         llmFailover,
-        _signalHandlers: signalHandlers.length > 0 ? signalHandlers : undefined,
     };
 }
 /**
@@ -218,13 +209,10 @@ export async function resetAsyncToolContext() {
         // Inline close to avoid circular import with context.ts
         const context = asyncGlobalContext;
         asyncGlobalContext = null;
-        if (context._signalHandlers) {
-            for (const { signal, handler } of context._signalHandlers) {
-                process.removeListener(signal, handler);
-            }
-        }
         if (context.backgroundSync) {
-            context.backgroundSync.stop();
+            // SMI-5649: stop() is now awaitable (aborts + awaits any in-flight
+            // sync) — was fire-and-forget.
+            await context.backgroundSync.stop();
         }
         if (context.llmFailover) {
             context.llmFailover.close();
