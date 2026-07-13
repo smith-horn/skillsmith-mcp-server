@@ -198,8 +198,13 @@ describe('applyRename — rename_skill_dir_and_frontmatter', () => {
         await fsp.mkdir(skillDir, { recursive: true });
         const skillMd = path.join(skillDir, 'SKILL.md');
         await fsp.writeFile(skillMd, '---\nname: code-review\ndescription: A skill\n---\n# body\n', 'utf-8');
+        // `source_path` is the SKILL.md file for skill-kind entries — matching
+        // what the real scanner (local-inventory.ts) produces — not the skill
+        // directory. Passing the directory here masked a real bug (SMI-5459
+        // UAT): apply_namespace_rename failed with backup_failed against a
+        // live skill because runBackup/computeDestPath assumed the directory.
         const suggestion = makeSuggestion({
-            source_path: skillDir,
+            source_path: skillMd,
             identifier: 'code-review',
             applyAction: 'rename_skill_dir_and_frontmatter',
             suggested: 'anthropic-code-review',
@@ -335,7 +340,7 @@ describe('applyRename — revert', () => {
         const skillMd = path.join(skillDir, 'SKILL.md');
         await fsp.writeFile(skillMd, '---\nname: code-review\n---\n', 'utf-8');
         const suggestion = makeSuggestion({
-            source_path: skillDir,
+            source_path: skillMd,
             identifier: 'code-review',
             applyAction: 'rename_skill_dir_and_frontmatter',
             suggested: 'anthropic-code-review',

@@ -6,11 +6,18 @@
  *
  * @see SMI-1055: Add license middleware to MCP server
  */
+import { getApiKey } from '@skillsmith/core';
 import { TOOL_FEATURES, FEATURE_DISPLAY_NAMES, FEATURE_TIERS, } from './toolFeatureMapping.js';
+import { createTierResolver } from './license.tier.js';
 /**
  * Configuration for the upgrade URL
  */
 const UPGRADE_URL = 'https://skillsmith.app/pricing';
+/**
+ * SMI-1953: Kill switch for live tier resolution. `'false'` forces the
+ * community fallback (with a loud warning) instead of the `/license-status` check.
+ */
+const LIVE_TIER_CHECK_ENV = 'SKILLSMITH_MCP_LIVE_TIER_CHECK';
 /**
  * Type guard to validate enterprise module structure
  */
@@ -102,6 +109,18 @@ export function createLicenseMiddleware(options) {
         cachedLicense: null,
         cacheExpiry: 0,
     };
+    // SMI-1953: personal-API-key live tier resolution. Used only when there is
+    // no enterprise `SKILLSMITH_LICENSE_KEY` (the validator path takes
+    // precedence). The resolver closes over `context` + `cacheTtl` to cache with
+    // the correct definitive-vs-transient TTL policy.
+    const liveTierCheckDisabled = process.env[LIVE_TIER_CHECK_ENV] === 'false';
+    if (liveTierCheckDisabled) {
+        // Loud at construction so a disabled switch is visible even with no traffic.
+        console.warn(`[skillsmith] ${LIVE_TIER_CHECK_ENV}=false — live subscription-tier resolution is ` +
+            'DISABLED; paying customers will be treated as community tier until this is unset.');
+    }
+    let warnedSkippedLiveCheck = false;
+    const resolveTierViaApiKey = createTierResolver(context, cacheTtl);
     // Initialize validator lazily
     let validatorPromise = null;
     async function getValidator() {
@@ -118,8 +137,23 @@ export function createLicenseMiddleware(options) {
         if (context.cachedLicense && Date.now() < context.cacheExpiry) {
             return context.cachedLicense;
         }
-        // No license key = community user
+        // No enterprise license key. SMI-1953: before defaulting to community,
+        // resolve the caller's REAL subscription tier from their personal API key
+        // via `/license-status`. Fixes the ~6-month bug where a paying customer with
+        // `SKILLSMITH_API_KEY` (but no `SKILLSMITH_LICENSE_KEY`) was always community.
         if (!context.licenseKey) {
+            const apiKey = getApiKey();
+            if (apiKey && !liveTierCheckDisabled) {
+                // resolveTierViaApiKey caches its own result and never throws.
+                return resolveTierViaApiKey(apiKey);
+            }
+            if (apiKey && liveTierCheckDisabled && !warnedSkippedLiveCheck) {
+                // Warn the first time a real tool call reaches the skipped path.
+                warnedSkippedLiveCheck = true;
+                console.warn(`[skillsmith] ${LIVE_TIER_CHECK_ENV}=false — skipping live tier resolution for a ` +
+                    'configured API key; treating this session as community tier.');
+            }
+            // No API key (or live check disabled) = community user.
             const communityLicense = {
                 valid: true,
                 tier: 'community',
@@ -291,5 +325,7 @@ export function createLicenseErrorResponse(result) {
 }
 // SMI-3911/4402: Gate helpers extracted to license.gate.ts (500-line limit)
 export { ok, errResponse, withLicenseAndQuota, createProfileIncompleteResponse, } from './license.gate.js';
+// SMI-1953: Live tier-resolution helpers extracted to license.tier.ts (500-line limit)
+export { featuresForTier, createTierResolver } from './license.tier.js';
 export { TOOL_FEATURES, FEATURE_DISPLAY_NAMES, FEATURE_TIERS } from './toolFeatureMapping.js';
 //# sourceMappingURL=license.js.map

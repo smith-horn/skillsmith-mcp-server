@@ -36,7 +36,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { getBackupsDir } from '../tools/install.conflict-helpers.js';
 import { appendOverride, findOverride, readLedger, writeLedger } from './namespace-overrides.js';
-import { actionToKind, buildSummary, computeDestPath, deriveSkillId, fsErr, pathExists, runBackup, } from './rename-engine.apply-paths.js';
+import { actionToKind, buildSummary, computeDestPath, deriveSkillId, fsErr, pathExists, resolveRenameTarget, runBackup, } from './rename-engine.apply-paths.js';
 import { rewriteFrontmatterName } from './rename-engine.helpers.js';
 export { generateSuggestionChain } from './suggestion-chain.js';
 /**
@@ -98,7 +98,7 @@ export async function applyRename(input) {
             collisionId: suggestion.collisionId,
             appliedAction: action,
             appliedRequest: 'apply',
-            fromPath: suggestion.entry.source_path,
+            fromPath: resolveRenameTarget(suggestion),
             toPath: '',
             backupPath: '',
             ledgerEntryId: '',
@@ -106,7 +106,7 @@ export async function applyRename(input) {
             error: {
                 kind: 'namespace.ledger.disk_divergence',
                 ledgerRenamedTo: existing.renamedTo,
-                onDisk: suggestion.entry.source_path,
+                onDisk: resolveRenameTarget(suggestion),
                 message: `ledger records rename to ${existing.renamedTo} but no file at ${existing.renamedPath}`,
                 remediationHint: 're-run skill_inventory_audit and reapply, or call apply_namespace_rename with customName to overwrite the ledger entry',
             },
@@ -114,14 +114,15 @@ export async function applyRename(input) {
     }
     // Compute destination + verify it doesn't already exist (other than as
     // the source for an idempotent no-op handled above).
+    const renameTarget = resolveRenameTarget(suggestion);
     const destPath = computeDestPath(suggestion, newName);
-    if (destPath !== suggestion.entry.source_path && (await pathExists(destPath))) {
+    if (destPath !== renameTarget && (await pathExists(destPath))) {
         return {
             success: false,
             collisionId: suggestion.collisionId,
             appliedAction: action,
             appliedRequest: 'apply',
-            fromPath: suggestion.entry.source_path,
+            fromPath: renameTarget,
             toPath: destPath,
             backupPath: '',
             ledgerEntryId: '',
@@ -144,7 +145,7 @@ export async function applyRename(input) {
             collisionId: suggestion.collisionId,
             appliedAction: action,
             appliedRequest: 'apply',
-            fromPath: suggestion.entry.source_path,
+            fromPath: renameTarget,
             toPath: destPath,
             backupPath: '',
             ledgerEntryId: '',
@@ -160,7 +161,10 @@ export async function applyRename(input) {
     // directory. For command/agent: just rename.
     try {
         if (action === 'rename_skill_dir_and_frontmatter') {
-            const skillMdPath = path.join(suggestion.entry.source_path, 'SKILL.md');
+            // `entry.source_path` IS the SKILL.md file for skill-kind entries
+            // (see local-inventory.ts) — no path.join needed. `renameTarget` is
+            // its parent, the actual skill directory to rename.
+            const skillMdPath = suggestion.entry.source_path;
             let original;
             try {
                 original = await fs.readFile(skillMdPath, 'utf-8');
@@ -171,7 +175,7 @@ export async function applyRename(input) {
                     collisionId: suggestion.collisionId,
                     appliedAction: action,
                     appliedRequest: 'apply',
-                    fromPath: suggestion.entry.source_path,
+                    fromPath: renameTarget,
                     toPath: destPath,
                     backupPath,
                     ledgerEntryId: '',
@@ -186,7 +190,7 @@ export async function applyRename(input) {
                     collisionId: suggestion.collisionId,
                     appliedAction: action,
                     appliedRequest: 'apply',
-                    fromPath: suggestion.entry.source_path,
+                    fromPath: renameTarget,
                     toPath: destPath,
                     backupPath,
                     ledgerEntryId: '',
@@ -199,10 +203,10 @@ export async function applyRename(input) {
                 };
             }
             await fs.writeFile(skillMdPath, rewriteResult.content, 'utf-8');
-            await fs.rename(suggestion.entry.source_path, destPath);
+            await fs.rename(renameTarget, destPath);
         }
         else {
-            await fs.rename(suggestion.entry.source_path, destPath);
+            await fs.rename(renameTarget, destPath);
         }
     }
     catch (err) {
@@ -211,7 +215,7 @@ export async function applyRename(input) {
             collisionId: suggestion.collisionId,
             appliedAction: action,
             appliedRequest: 'apply',
-            fromPath: suggestion.entry.source_path,
+            fromPath: renameTarget,
             toPath: destPath,
             backupPath,
             ledgerEntryId: '',
@@ -225,7 +229,7 @@ export async function applyRename(input) {
         kind,
         originalIdentifier: suggestion.currentName,
         renamedTo: newName,
-        originalPath: suggestion.entry.source_path,
+        originalPath: renameTarget,
         renamedPath: destPath,
         auditId,
         reason: suggestion.reason,
@@ -248,7 +252,7 @@ export async function applyRename(input) {
         collisionId: suggestion.collisionId,
         appliedAction: action,
         appliedRequest: 'apply',
-        fromPath: suggestion.entry.source_path,
+        fromPath: renameTarget,
         toPath: destPath,
         backupPath,
         ledgerEntryId: newEntry?.id ?? '',
@@ -274,8 +278,8 @@ async function revertRename(suggestion, auditId) {
             collisionId: suggestion.collisionId,
             appliedAction: suggestion.applyAction,
             appliedRequest: 'revert',
-            fromPath: suggestion.entry.source_path,
-            toPath: suggestion.entry.source_path,
+            fromPath: resolveRenameTarget(suggestion),
+            toPath: resolveRenameTarget(suggestion),
             backupPath: '',
             ledgerEntryId: '',
             summary: buildSummary(suggestion.currentName, suggestion.currentName, auditId, 'revert'),

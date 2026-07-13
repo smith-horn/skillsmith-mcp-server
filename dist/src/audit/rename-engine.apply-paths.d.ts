@@ -20,9 +20,19 @@ import type { RenameAction, RenameError, RenameSuggestion } from './rename-engin
  */
 export declare function actionToKind(action: RenameAction): OverrideRecord['kind'];
 /**
+ * `InventoryEntry.source_path` differs by kind (see local-inventory.ts):
+ * for `skill` entries it is the `SKILL.md` FILE path, not the skill
+ * directory; for `command`/`agent` entries it already is the target file.
+ * Every rename/backup operation needs the actual on-disk thing being
+ * renamed — resolve that once here instead of re-deriving it ad hoc at
+ * each call site (that duplication is exactly how this bug happened:
+ * multiple sites assumed `source_path` was already the skill directory).
+ */
+export declare function resolveRenameTarget(suggestion: RenameSuggestion): string;
+/**
  * Compute the destination path on disk for a rename. For command/agent
  * files, swap the basename (sans `.md`) with `newName.md`. For skill
- * directories, rename the directory itself.
+ * directories, rename the directory itself (a sibling of the current one).
  */
 export declare function computeDestPath(suggestion: RenameSuggestion, newName: string): string;
 /**

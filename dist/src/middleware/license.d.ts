@@ -170,6 +170,7 @@ export declare function createLicenseErrorResponse(result: LicenseValidationResu
     };
 };
 export { ok, errResponse, withLicenseAndQuota, createProfileIncompleteResponse, } from './license.gate.js';
+export { featuresForTier, createTierResolver } from './license.tier.js';
 export type { FeatureFlag } from './toolFeatureMapping.js';
 export { TOOL_FEATURES, FEATURE_DISPLAY_NAMES, FEATURE_TIERS } from './toolFeatureMapping.js';
 //# sourceMappingURL=license.d.ts.map
