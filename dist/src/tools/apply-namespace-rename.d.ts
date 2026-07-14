@@ -16,6 +16,15 @@
  *     enforces non-empty `customName` on this branch).
  *   - `action: 'skip'`   — no-op; returns `{ success: true }` with no
  *     `result`. The agent records the decision; nothing on disk changes.
+ *   - `action: 'revert'` — undo a previously applied `apply`/`custom`
+ *     rename (SMI-5671). `suggestions.json` is a static snapshot from
+ *     audit time, so the same `(auditId, collisionId)` lookup still
+ *     resolves after the forward rename already happened. Ledger-backed
+ *     via `applyRename({ request: { action: 'revert', collisionId } })` —
+ *     this is the only durable, cross-session undo path (the CLI's
+ *     `sklx audit revert` was never implemented, and the `undo_apply` tool
+ *     only tracks same-process session state). `collisionId` disambiguates
+ *     when a single audit run resolved 2+ collisions under one `auditId`.
  *
  * Failure modes (typed via `errorCode`):
  *   - `namespace.audit.invalid_input` — Zod rejection.
@@ -38,34 +47,38 @@ import type { ApplyNamespaceRenameResponse } from './apply-namespace-rename.type
  * `confirmed !== true` (and `action !== 'skip'`), the tool returns a
  * non-mutating preview envelope describing the rename; the caller must
  * re-invoke with `confirmed: true` to actually rename the file.
+ *
+ * SMI-5671: `action: 'revert'` takes no `customName` — same as `apply`/
+ * `skip` — so the existing refinement (`action !== 'custom' &&
+ * customName !== undefined` → reject) already covers it with no change.
  */
 export declare const applyNamespaceRenameInputSchema: z.ZodEffects<z.ZodObject<{
     auditId: z.ZodString;
     collisionId: z.ZodString;
-    action: z.ZodEnum<["apply", "custom", "skip"]>;
+    action: z.ZodEnum<["apply", "custom", "skip", "revert"]>;
     customName: z.ZodOptional<z.ZodString>;
     confirmed: z.ZodOptional<z.ZodBoolean>;
 }, "strict", z.ZodTypeAny, {
     auditId: string;
-    action: "apply" | "custom" | "skip";
+    action: "apply" | "revert" | "custom" | "skip";
     collisionId: string;
     customName?: string | undefined;
     confirmed?: boolean | undefined;
 }, {
     auditId: string;
-    action: "apply" | "custom" | "skip";
+    action: "apply" | "revert" | "custom" | "skip";
     collisionId: string;
     customName?: string | undefined;
     confirmed?: boolean | undefined;
 }>, {
     auditId: string;
-    action: "apply" | "custom" | "skip";
+    action: "apply" | "revert" | "custom" | "skip";
     collisionId: string;
     customName?: string | undefined;
     confirmed?: boolean | undefined;
 }, {
     auditId: string;
-    action: "apply" | "custom" | "skip";
+    action: "apply" | "revert" | "custom" | "skip";
     collisionId: string;
     customName?: string | undefined;
     confirmed?: boolean | undefined;

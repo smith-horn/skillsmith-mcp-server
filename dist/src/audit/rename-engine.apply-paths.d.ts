@@ -54,11 +54,20 @@ export declare function pathExists(target: string): Promise<boolean>;
  */
 export declare function runBackup(suggestion: RenameSuggestion): Promise<string>;
 /**
- * Build the inline revert summary (decision #10):
- *   `"Renamed /<OLD> → /<NEW>. To undo: sklx audit revert <auditId>"`
+ * Build the inline revert summary (decision #10, corrected by SMI-5671
+ * Change 2):
+ *   `"Renamed /<OLD> → /<NEW>. To undo: call apply_namespace_rename with
+ *   auditId: '<auditId>', collisionId: '<collisionId>', action: 'revert'."`
+ *
+ * The undo hint names the real mechanism (`apply_namespace_rename`'s
+ * `action: 'revert'` — SMI-5671; the CLI's `sklx audit revert` was never
+ * implemented) and interpolates BOTH literal identifiers a caller in a
+ * genuinely fresh session needs to invoke it: `auditId` alone is not
+ * sufficient once Change 0's `(auditId, collisionId)` disambiguation is
+ * load-bearing for a correct revert.
  *
  * For skill renames (no leading `/`), the summary still uses the `/`
  * prefix per the plan's literal text — agents render it as-is.
  */
-export declare function buildSummary(oldIdentifier: string, newIdentifier: string, auditId: string, action: 'apply' | 'revert'): string;
+export declare function buildSummary(oldIdentifier: string, newIdentifier: string, auditId: string, collisionId: string, action: 'apply' | 'revert'): string;
 //# sourceMappingURL=rename-engine.apply-paths.d.ts.map

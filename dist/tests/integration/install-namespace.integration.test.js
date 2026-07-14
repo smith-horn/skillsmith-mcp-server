@@ -395,7 +395,7 @@ describe('install namespace integration', () => {
             request: { action: 'apply', auditId },
         });
         expect(applyResult.success).toBe(true);
-        expect(applyResult.summary).toMatch(/Renamed \/code-helper → \/sibling-vendor-code-helper\. To undo: sklx/);
+        expect(applyResult.summary).toMatch(/Renamed \/code-helper → \/sibling-vendor-code-helper\. To undo: call apply_namespace_rename with auditId: '.+', collisionId: 'e2e-01', action: 'revert'\./);
         // C: gate now proceeds.
         const proceeded = await runNamespaceGate({
             candidate: c,
