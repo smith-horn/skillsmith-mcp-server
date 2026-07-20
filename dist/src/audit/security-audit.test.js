@@ -37,6 +37,7 @@ const ZERO_BREAKDOWN = {
     pii: 0,
     codeExecution: 0,
     obfuscatedDirective: 0,
+    typosquat: 0,
 };
 function report(skillId, opts) {
     return {

@@ -12,8 +12,8 @@
 /**
  * Feature flags for enterprise licensing
  *
- * This type mirrors the canonical FeatureFlag from @skillsmith/enterprise.
- * We define it locally because @skillsmith/enterprise is an optional peer
+ * This type mirrors the canonical FeatureFlag from @smith-horn/enterprise.
+ * We define it locally because @smith-horn/enterprise is an optional peer
  * dependency that may not be installed for community users.
  *
  * @see packages/enterprise/src/license/FeatureFlags.ts for canonical definition
@@ -137,12 +137,13 @@ export const FEATURE_TIERS: Record<FeatureFlag, 'individual' | 'team' | 'enterpr
   usage_analytics: 'team',
   priority_support: 'team',
   skill_security_audit: 'team',
+  // SMI-3140: compliance_reports expanded to Team + Enterprise (2026-07-14)
+  compliance_reports: 'team',
   // Enterprise tier features
   sso_saml: 'enterprise',
   rbac: 'enterprise',
   audit_logging: 'enterprise',
   siem_export: 'enterprise',
-  compliance_reports: 'enterprise',
   private_registry: 'enterprise',
   // Additional features
   custom_integrations: 'enterprise',

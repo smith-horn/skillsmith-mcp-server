@@ -4,7 +4,7 @@
  * @see SMI-3894: Tier feature gap remediation (Wave 3)
  *
  * Bridges the existing EnterpriseAuditLogger backend to MCP tool handlers.
- * Uses dynamic import() for @skillsmith/enterprise (optional peer dependency)
+ * Uses dynamic import() for @smith-horn/enterprise (optional peer dependency)
  * to avoid crashing the MCP server for community users.
  *
  * Tier gate: Enterprise (audit_logging / siem_export feature flags).
@@ -159,7 +159,7 @@ export declare const executeAuditExport: (input: {
     endDate?: string | undefined;
     eventType?: string | undefined;
 }, toolContext: ToolContext) => Promise<{
-    events: Record<string, unknown>[];
+    events: unknown[];
     total: number;
     returned: number;
 }>;
@@ -172,7 +172,7 @@ export declare const executeAuditQuery: (input: {
     eventType?: string | undefined;
     actor?: string | undefined;
 }, toolContext: ToolContext) => Promise<{
-    events: Record<string, unknown>[];
+    events: unknown[];
     total: number;
     returned: number;
 }>;
@@ -181,7 +181,7 @@ export declare const executeSiemExport: (input: {
     startDate?: string | undefined;
     endDate?: string | undefined;
 }, toolContext: ToolContext) => Promise<{
-    events: Record<string, unknown>[];
+    events: unknown[];
     total: number;
     format: "json" | "syslog" | "cef";
     exportedAt: string;

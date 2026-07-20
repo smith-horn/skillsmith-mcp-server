@@ -50,6 +50,7 @@ describe('compliance-tools', () => {
                 format: 'soc2',
                 period: '90d',
                 includeUserActivity: true,
+                backfillDependencies: false,
             };
             const result = await executeComplianceReport(input, mockContext);
             expect(result.format).toBe('soc2');
@@ -66,7 +67,7 @@ describe('compliance-tools', () => {
             expect(report).toContain('skillsmith/commit');
         });
         it('should omit user activity when disabled', async () => {
-            const result = await executeComplianceReport({ format: 'soc2', period: '90d', includeUserActivity: false }, mockContext);
+            const result = await executeComplianceReport({ format: 'soc2', period: '90d', includeUserActivity: false, backfillDependencies: false }, mockContext);
             const report = result.report;
             expect(report).not.toContain('User Activity');
         });
@@ -80,6 +81,7 @@ describe('compliance-tools', () => {
                 format: 'cyclonedx',
                 period: '90d',
                 includeUserActivity: true,
+                backfillDependencies: false,
             };
             const result = await executeComplianceReport(input, mockContext);
             expect(result.format).toBe('cyclonedx');
@@ -90,8 +92,15 @@ describe('compliance-tools', () => {
             expect(report.metadata).toBeDefined();
             const components = report.components;
             expect(components.length).toBeGreaterThanOrEqual(2);
-            expect(components[0].name).toBe('skillsmith/commit');
-            expect(components[0].type).toBe('library');
+            const names = components.map((c) => c.name);
+            expect(names).toContain('skillsmith/commit');
+            expect(components.every((c) => c.type === 'library')).toBe(true);
+            // SMI-3140: sparse-data signal survives inside the BOM document itself
+            // (mockContext has no db, so this always resolves to the placeholder).
+            const metadata = report.metadata;
+            const properties = metadata.properties;
+            const dataSourceProp = properties.find((p) => p.name === 'skillsmith:dependencyDataSource');
+            expect(dataSourceProp?.value).toBe('pending-rescan');
         });
     });
     // ==========================================================================
@@ -103,6 +112,7 @@ describe('compliance-tools', () => {
                 format: 'json',
                 period: '30d',
                 includeUserActivity: true,
+                backfillDependencies: false,
             };
             const result = await executeComplianceReport(input, mockContext);
             expect(result.format).toBe('json');
@@ -117,7 +127,7 @@ describe('compliance-tools', () => {
             expect(report.configState).toBeDefined();
         });
         it('should include null userActivity when disabled', async () => {
-            const result = await executeComplianceReport({ format: 'json', period: '90d', includeUserActivity: false }, mockContext);
+            const result = await executeComplianceReport({ format: 'json', period: '90d', includeUserActivity: false, backfillDependencies: false }, mockContext);
             const report = result.report;
             expect(report.userActivity).toBeNull();
         });

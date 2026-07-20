@@ -8,12 +8,14 @@
  *
  * Scope: local inventory only. For server-side audit data, use audit_export.
  *
- * Tier gate: Enterprise (compliance_reports feature flag).
+ * Tier gate: Team and Enterprise (compliance_reports feature flag, SMI-3140
+ * expanded from Enterprise-only 2026-07-14).
  */
 import { z } from 'zod';
 import { isSupabaseConfigured } from '../supabase-client.js';
 import { withTelemetry } from '@skillsmith/core/telemetry';
 import { createRealComplianceService } from './compliance-tools.service.js';
+import { formatCycloneDx as buildCycloneDxBom } from './compliance-tools.cyclonedx.js';
 // ============================================================================
 // Input schemas
 // ============================================================================
@@ -29,6 +31,15 @@ export const complianceReportInputSchema = z.object({
         .optional()
         .default(true)
         .describe('Include user activity summary (default: true)'),
+    backfillDependencies: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe('cyclonedx format only. Opt-in: when installed skills have no skill_dependencies ' +
+        'rows yet, run inline dependency extraction before export instead of emitting a ' +
+        'pending-rescan placeholder. Requires the better-sqlite3 driver — refused (not a ' +
+        'silent no-op) on sql.js/WASM, which has no cross-process write coordination. ' +
+        'Default: false.'),
 });
 // ============================================================================
 // Tool schema for MCP registration
@@ -37,7 +48,7 @@ export const complianceReportToolSchema = {
     name: 'compliance_report',
     description: 'Generate compliance reports: SOC2 (markdown), CycloneDX (JSON SBOM), or raw JSON. ' +
         'Scoped to local skill inventory. ' +
-        'Requires Enterprise tier (compliance_reports feature).',
+        'Requires Team tier or higher (compliance_reports feature).',
     inputSchema: {
         type: 'object',
         properties: {
@@ -54,6 +65,12 @@ export const complianceReportToolSchema = {
             includeUserActivity: {
                 type: 'boolean',
                 description: 'Include user activity summary (default: true)',
+            },
+            backfillDependencies: {
+                type: 'boolean',
+                description: 'cyclonedx format only. Opt-in inline dependency extraction when skill_dependencies ' +
+                    'is empty (default: false, emits a pending-rescan placeholder instead). ' +
+                    'better-sqlite3 only.',
             },
         },
         required: ['format'],
@@ -169,30 +186,17 @@ function formatSoc2(data, period) {
     }
     return lines.join('\n');
 }
-function formatCycloneDx(data) {
-    return {
-        bomFormat: 'CycloneDX',
-        specVersion: '1.5',
-        version: 1,
-        metadata: {
-            timestamp: new Date().toISOString(),
-            tools: [{ vendor: 'Skillsmith', name: 'compliance-report', version: '1.0.0' }],
-            component: {
-                type: 'application',
-                name: 'skillsmith-local-inventory',
-                version: '1.0.0',
-            },
-        },
-        components: data.skills.map((s) => ({
-            type: 'library',
-            name: s.skillId,
-            version: s.version,
-            properties: [
-                { name: 'skillsmith:trustTier', value: s.trustTier },
-                { name: 'skillsmith:installedAt', value: s.installedAt },
-            ],
-        })),
-    };
+// SMI-3140 Wave 1: the CycloneDX AI/ML-BOM formatter is implemented in
+// compliance-tools.cyclonedx.ts (library-backed component + dependency-graph
+// construction, sparse-data handling, audit logging) — kept out of this file
+// to stay under the 500-line audit:standards gate. `formatCycloneDx` below is
+// a thin adapter that pulls the DB-backed context this format alone needs.
+async function formatCycloneDx(data, context, options) {
+    return buildCycloneDxBom(data, {
+        db: context.db,
+        skillDependencyRepository: context.skillDependencyRepository,
+        backfillDependencies: options.backfillDependencies,
+    });
 }
 function formatJson(data, period) {
     return {
@@ -242,7 +246,9 @@ async function executeComplianceReportImpl(input, context) {
                 generatedAt,
                 scope: 'local',
                 period,
-                report: formatCycloneDx(data),
+                report: await formatCycloneDx(data, context, {
+                    backfillDependencies: input.backfillDependencies ?? false,
+                }),
             };
         case 'json':
             return {

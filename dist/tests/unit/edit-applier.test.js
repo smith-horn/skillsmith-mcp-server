@@ -113,7 +113,7 @@ describe('applyRecommendedEdit — apply happy path', () => {
         });
         expect(applyResult.success).toBe(true);
         expect(applyResult.error).toBeUndefined();
-        expect(applyResult.summary).toBe(`Edited ${edit.filePath} lines ${edit.lineRange.start}-${edit.lineRange.end}. To undo: sklx audit revert aud-apply-01`);
+        expect(applyResult.summary).toBe(`Edited ${edit.filePath} lines ${edit.lineRange.start}-${edit.lineRange.end}. To undo (this session only): call undo_apply with suggestion_id: '${edit.collisionId}'.`);
         expect(applyResult.backupPath).not.toBe('');
         const after = fs.readFileSync(edit.filePath, 'utf-8');
         expect(after).not.toBe(before);

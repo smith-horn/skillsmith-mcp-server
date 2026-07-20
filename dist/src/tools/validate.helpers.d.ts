@@ -30,11 +30,15 @@ export declare function detectClaudeMdModification(body: string): string[];
  *
  * Checks for:
  * 1. Deprecated 'composes' field (suggest migration to dependencies.skills)
- * 2. MCP tool references in skill body (suggest declaring in dependencies.platform)
+ * 2. MCP tool references in skill content (suggest declaring in dependencies.platform)
  *
  * @param metadata - Parsed frontmatter metadata (may be empty object)
- * @param body - Skill body content (markdown after frontmatter)
+ * @param content - Full raw skill content, including frontmatter (SMI-5676:
+ *   previously received only the post-frontmatter body, which silently
+ *   excluded `extractMcpReferences`'s frontmatter `allowed-tools`/`tools`
+ *   parsing added in Wave 1 Step 3b — the body-only exclusion never
+ *   contains a frontmatter block, so that detection path could never fire)
  * @returns Array of dependency-related validation warnings
  */
-export declare function validateDependencies(metadata: Record<string, unknown>, body: string): ValidationError[];
+export declare function validateDependencies(metadata: Record<string, unknown>, content: string): ValidationError[];
 //# sourceMappingURL=validate.helpers.d.ts.map

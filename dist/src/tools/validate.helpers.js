@@ -2,7 +2,7 @@
  * Validate Tool Helper Functions
  * @module @skillsmith/mcp-server/tools/validate.helpers
  */
-import { extractMcpReferences } from '@skillsmith/core';
+import { extractMcpReferences, getRegisteredMcpServers } from '@skillsmith/core';
 import { FIELD_LIMITS, SSRF_PATTERNS, PATH_TRAVERSAL_PATTERNS } from './validate.types.js';
 import { KNOWN_IDES, KNOWN_LLMS } from '../utils/validation.js';
 /**
@@ -351,13 +351,17 @@ export function detectClaudeMdModification(body) {
  *
  * Checks for:
  * 1. Deprecated 'composes' field (suggest migration to dependencies.skills)
- * 2. MCP tool references in skill body (suggest declaring in dependencies.platform)
+ * 2. MCP tool references in skill content (suggest declaring in dependencies.platform)
  *
  * @param metadata - Parsed frontmatter metadata (may be empty object)
- * @param body - Skill body content (markdown after frontmatter)
+ * @param content - Full raw skill content, including frontmatter (SMI-5676:
+ *   previously received only the post-frontmatter body, which silently
+ *   excluded `extractMcpReferences`'s frontmatter `allowed-tools`/`tools`
+ *   parsing added in Wave 1 Step 3b — the body-only exclusion never
+ *   contains a frontmatter block, so that detection path could never fire)
  * @returns Array of dependency-related validation warnings
  */
-export function validateDependencies(metadata, body) {
+export function validateDependencies(metadata, content) {
     const errors = [];
     // 1. Check for deprecated 'composes' field
     if (metadata.composes) {
@@ -367,10 +371,15 @@ export function validateDependencies(metadata, body) {
             severity: 'warning',
         });
     }
-    // 2. Extract MCP references from body
-    const mcpResult = extractMcpReferences(body);
-    // 3. For each high-confidence server, add an informational warning
+    // 2. Extract MCP references from the full content (frontmatter + body),
+    // cross-checked against this project's .mcp.json (SMI-5676) so a server
+    // that's already confirmed registered doesn't get an unnecessary warning.
+    const mcpResult = extractMcpReferences(content, getRegisteredMcpServers());
+    // 3. For each high-confidence server not already confirmed registered, add
+    // an informational warning.
     for (const server of mcpResult.highConfidenceServers) {
+        if (mcpResult.serverResolutions?.[server] === 'registered')
+            continue;
         errors.push({
             field: 'dependencies',
             message: `Inferred MCP dependency: '${server}' (referenced in skill body). ` +

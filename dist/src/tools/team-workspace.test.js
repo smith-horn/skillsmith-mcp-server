@@ -39,7 +39,7 @@ describe('teamWorkspaceInputSchema', () => {
     it('accepts get action with workspaceId', () => {
         const result = teamWorkspaceInputSchema.parse({
             action: 'get',
-            workspaceId: '00000000-0000-0000-0000-000000000001',
+            workspaceId: '00000000-0000-0000-0000-000000000000',
         });
         expect(result.workspaceId).toBeDefined();
     });
@@ -54,7 +54,7 @@ describe('shareSkillInputSchema', () => {
     it('accepts valid add input', () => {
         const result = shareSkillInputSchema.parse({
             action: 'add',
-            workspaceId: '00000000-0000-0000-0000-000000000001',
+            workspaceId: '00000000-0000-0000-0000-000000000000',
             skillId: 'author/skill-name',
         });
         expect(result.action).toBe('add');
@@ -63,14 +63,14 @@ describe('shareSkillInputSchema', () => {
     it('accepts list action without skillId', () => {
         const result = shareSkillInputSchema.parse({
             action: 'list',
-            workspaceId: '00000000-0000-0000-0000-000000000001',
+            workspaceId: '00000000-0000-0000-0000-000000000000',
         });
         expect(result.action).toBe('list');
     });
     it('rejects invalid skillId format', () => {
         expect(() => shareSkillInputSchema.parse({
             action: 'add',
-            workspaceId: '00000000-0000-0000-0000-000000000001',
+            workspaceId: '00000000-0000-0000-0000-000000000000',
             skillId: 'no-slash',
         })).toThrow();
     });
