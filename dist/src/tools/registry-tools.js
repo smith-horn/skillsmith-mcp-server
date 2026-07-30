@@ -1,22 +1,39 @@
 /**
  * @fileoverview Private registry MCP tools for enterprise skill management
  * @module @skillsmith/mcp-server/tools/registry-tools
- * @see SMI-3902: Private Registry MCP Tools
- * @see ADR-115: Private Registry Architecture
+ * @see SMI-3902: Private Registry MCP Tools (original stub)
+ * @see SMI-5816: Private skill registry — real implementation
+ * @see ADR-129: Postgres-native (JSONB) storage + real team-auth (migration 071)
  *
  * Enables enterprise teams to publish and manage skills in a private registry
- * scoped to their organization. Metadata lives in Supabase with team-scoped
- * RLS; tarballs are stored in S3-compatible object storage.
+ * scoped to their organization. Both metadata and packaged content live in the
+ * `private_registry_skills` Postgres table (JSONB content, not S3 — ADR-129);
+ * team-scoped RLS + an in-query team_id filter on the service-role path (ADR-116).
  *
- * Tier gate: Enterprise (private_registry feature flag).
+ * Backing service is selected at module load: the live Supabase-backed service
+ * (registry-tools.live.ts) when Supabase is configured, else an in-memory stub
+ * (registry-tools.stub.ts) for local dev / tests.
+ *
+ * Tier gate: Enterprise (private_registry feature flag — toolFeatureMapping.ts).
  */
 import { z } from 'zod';
 import { isSupabaseConfigured } from '../supabase-client.js';
 import { resolveLicenseTeamId, readLicenseKey } from './team-resolver.js';
 import { withTelemetry } from '@skillsmith/core/telemetry';
+import { createStubRegistryService } from './registry-tools.stub.js';
+import { createLiveRegistryService } from './registry-tools.live.js';
+// Re-export stub factory for external consumers and tests
+export { createStubRegistryService } from './registry-tools.stub.js';
 // ============================================================================
 // Input schemas
 // ============================================================================
+/**
+ * Packaged skill files as a flat { relativePath: fileText } map
+ * (e.g. { "SKILL.md": "...", "scripts/foo.sh": "..." }). Stored JSONB-native
+ * per ADR-129; a "SKILL.md" entry is required and total size is capped at 2 MB
+ * (enforced in the live publish service).
+ */
+export const skillContentSchema = z.record(z.string(), z.string());
 export const privateRegistryPublishInputSchema = z.object({
     skillId: z
         .string()
@@ -24,12 +41,13 @@ export const privateRegistryPublishInputSchema = z.object({
         .describe('Skill identifier in author/name format'),
     version: z
         .string()
-        .regex(/^\d+\.\d+\.\d+/, 'Must be a valid semver version')
+        .regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/, 'Must be a valid semver version')
         .describe('Semver version to publish'),
+    content: skillContentSchema.describe('Packaged skill files as a { path: text } map; must include a "SKILL.md" entry (max 2 MB total)'),
     description: z.string().max(500).optional().describe('Optional skill description'),
 });
 export const privateRegistryManageInputSchema = z.object({
-    action: z.enum(['list', 'get', 'deprecate', 'undeprecate']),
+    action: z.enum(['list', 'get', 'deprecate', 'undeprecate', 'namespace']),
     skillId: z
         .string()
         .regex(/^[^/]+\/[^/]+$/, 'Must be author/name format')
@@ -44,7 +62,7 @@ export const privateRegistryPublishToolSchema = {
     name: 'private_registry_publish',
     description: "Publish a skill to your organization's private registry. " +
         'Requires Enterprise tier (private_registry feature). ' +
-        'Skills are scoped to your team namespace.',
+        'Skills are scoped to your team namespace and published versions are immutable.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -56,25 +74,31 @@ export const privateRegistryPublishToolSchema = {
                 type: 'string',
                 description: 'Semver version to publish',
             },
+            content: {
+                type: 'object',
+                additionalProperties: { type: 'string' },
+                description: 'Packaged skill files as a { path: text } map; must include "SKILL.md" (max 2 MB total)',
+            },
             description: {
                 type: 'string',
                 description: 'Optional skill description',
             },
         },
-        required: ['skillId', 'version'],
+        required: ['skillId', 'version', 'content'],
     },
 };
 export const privateRegistryManageToolSchema = {
     name: 'private_registry_manage',
-    description: 'Manage skills in your private registry (list, get, deprecate, undeprecate). ' +
+    description: 'Manage skills in your private registry (list, get, deprecate, undeprecate, namespace). ' +
         'Requires Enterprise tier (private_registry feature).',
     inputSchema: {
         type: 'object',
         properties: {
             action: {
                 type: 'string',
-                enum: ['list', 'get', 'deprecate', 'undeprecate'],
-                description: 'Registry operation to perform',
+                enum: ['list', 'get', 'deprecate', 'undeprecate', 'namespace'],
+                description: 'Registry operation to perform. "namespace" returns your team\'s publish ' +
+                    'namespace (the required skill_id prefix) without attempting a publish.',
             },
             skillId: {
                 type: 'string',
@@ -88,58 +112,14 @@ export const privateRegistryManageToolSchema = {
         required: ['action'],
     },
 };
-// ============================================================================
-// Stub service (returns realistic mock data)
-// ============================================================================
-/** @internal Exported for testing */
-export function createStubRegistryService() {
-    const registry = new Map();
-    return {
-        async publish(teamId, skillId, version, description) {
-            const skill = {
-                skillId,
-                version,
-                description: description ?? null,
-                deprecated: false,
-                publishedAt: new Date().toISOString(),
-                publishedBy: 'current-user',
-                registryUrl: `https://registry.skillsmith.app/private/${teamId}/${skillId}@${version}`,
-            };
-            registry.set(skillId, skill);
-            return skill;
-        },
-        async list(_teamId, version) {
-            const all = [...registry.values()];
-            if (version)
-                return all.filter((s) => s.version === version);
-            return all;
-        },
-        async get(_teamId, skillId, version) {
-            const skill = registry.get(skillId);
-            if (!skill)
-                return null;
-            if (version && skill.version !== version)
-                return null;
-            return skill;
-        },
-        async deprecate(_teamId, skillId) {
-            const skill = registry.get(skillId);
-            if (!skill)
-                return false;
-            skill.deprecated = true;
-            return true;
-        },
-        async undeprecate(_teamId, skillId) {
-            const skill = registry.get(skillId);
-            if (!skill)
-                return false;
-            skill.deprecated = false;
-            return true;
-        },
-    };
-}
-// Module-level singleton
-let service = createStubRegistryService();
+/**
+ * Module-level singleton. Picks the live Supabase-backed service when
+ * SUPABASE_URL + SUPABASE_ANON_KEY are configured; otherwise the in-memory stub
+ * (local dev / tests).
+ */
+let service = isSupabaseConfigured()
+    ? createLiveRegistryService()
+    : createStubRegistryService();
 /** Replace the registry service implementation (for testing or production swap) */
 export function setPrivateRegistryService(svc) {
     service = svc;
@@ -171,7 +151,7 @@ async function resolveTeamId() {
     }
     const teamId = await resolveLicenseTeamId(licenseKey);
     if (!teamId) {
-        throw new Error('Unable to resolve team from license key. Ensure the key is active and attached to a Team-tier subscription.');
+        throw new Error('Unable to resolve team from license key. Ensure the key is active and attached to an Enterprise-tier subscription.');
     }
     return teamId;
 }
@@ -191,14 +171,49 @@ async function executePrivateRegistryPublishImpl(input, _context) {
             error: err instanceof Error ? err.message : 'Failed to resolve team from license key.',
         };
     }
-    const skill = await service.publish(teamId, input.skillId, input.version, input.description);
-    return {
-        success: true,
-        dataSource,
-        skill,
-        message: `Published ${input.skillId}@${input.version} to private registry.\n` +
-            `Registry URL: ${skill.registryUrl}`,
-    };
+    // SMI-5852 UX pre-check: the DB trigger (enforce_private_skill_namespace) is the
+    // actual security boundary — this only surfaces a namespace mismatch as an
+    // actionable typed error instead of a raw 23514. A lookup failure (M3, known and
+    // accepted gap — not applied this round) does NOT block the publish attempt; the
+    // trigger still enforces correctness either way.
+    let skillNamespace;
+    try {
+        const namespace = await service.getNamespace(teamId);
+        if (namespace) {
+            skillNamespace = namespace;
+            const requestedNamespace = input.skillId.split('/')[0];
+            if (requestedNamespace !== namespace) {
+                return {
+                    success: false,
+                    dataSource,
+                    error: `skill_id must start with "${namespace}/" for this team's private registry namespace.`,
+                };
+            }
+        }
+    }
+    catch {
+        // Lookup failure — skip the pre-check, let the DB trigger be the sole gate.
+    }
+    // Service errors (immutability conflict, size cap, missing SKILL.md, missing
+    // service-role key) surface as typed {success:false} results, not exceptions.
+    try {
+        const skill = await service.publish(teamId, input.skillId, input.version, input.content, input.description);
+        return {
+            success: true,
+            dataSource,
+            skill,
+            skillNamespace,
+            message: `Published ${input.skillId}@${input.version} to private registry.\n` +
+                `Registry URL: ${skill.registryUrl}`,
+        };
+    }
+    catch (err) {
+        return {
+            success: false,
+            dataSource,
+            error: err instanceof Error ? err.message : 'Failed to publish skill.',
+        };
+    }
 }
 /**
  * Execute a private_registry_manage operation.
@@ -216,70 +231,103 @@ async function executePrivateRegistryManageImpl(input, _context) {
             error: err instanceof Error ? err.message : 'Failed to resolve team from license key.',
         };
     }
-    switch (input.action) {
-        case 'list': {
-            const skills = await service.list(teamId, input.version);
-            return {
-                success: true,
-                dataSource,
-                skills,
-                message: `Found ${skills.length} skill(s) in private registry.`,
-            };
-        }
-        case 'get': {
-            if (!input.skillId) {
-                return { success: false, dataSource, error: 'skillId is required for action "get".' };
-            }
-            const skill = await service.get(teamId, input.skillId, input.version);
-            if (!skill) {
+    // Wrap service calls so live-mode errors (e.g. missing service-role key) surface
+    // as typed {success:false} results instead of propagating as unhandled exceptions.
+    try {
+        switch (input.action) {
+            case 'list': {
+                const skills = await service.list(teamId, input.version);
                 return {
-                    success: false,
+                    success: true,
                     dataSource,
-                    error: `Skill "${input.skillId}" not found in private registry.`,
+                    skills,
+                    message: `Found ${skills.length} skill(s) in private registry.`,
                 };
             }
-            return { success: true, dataSource, skill };
-        }
-        case 'deprecate': {
-            if (!input.skillId) {
-                return { success: false, dataSource, error: 'skillId is required for action "deprecate".' };
+            case 'get': {
+                if (!input.skillId) {
+                    return { success: false, dataSource, error: 'skillId is required for action "get".' };
+                }
+                const skill = await service.get(teamId, input.skillId, input.version);
+                if (!skill) {
+                    return {
+                        success: false,
+                        dataSource,
+                        error: `Skill "${input.skillId}" not found in private registry.`,
+                    };
+                }
+                return { success: true, dataSource, skill };
             }
-            const deprecated = await service.deprecate(teamId, input.skillId);
-            if (!deprecated) {
+            case 'deprecate': {
+                if (!input.skillId) {
+                    return {
+                        success: false,
+                        dataSource,
+                        error: 'skillId is required for action "deprecate".',
+                    };
+                }
+                const deprecated = await service.deprecate(teamId, input.skillId);
+                if (!deprecated) {
+                    return {
+                        success: false,
+                        dataSource,
+                        error: `Skill "${input.skillId}" not found in private registry.`,
+                    };
+                }
                 return {
-                    success: false,
+                    success: true,
                     dataSource,
-                    error: `Skill "${input.skillId}" not found in private registry.`,
+                    message: `Skill "${input.skillId}" has been deprecated. It will no longer appear in search results.`,
                 };
             }
-            return {
-                success: true,
-                dataSource,
-                message: `Skill "${input.skillId}" has been deprecated. It will no longer appear in search results.`,
-            };
-        }
-        case 'undeprecate': {
-            if (!input.skillId) {
+            case 'undeprecate': {
+                if (!input.skillId) {
+                    return {
+                        success: false,
+                        dataSource,
+                        error: 'skillId is required for action "undeprecate".',
+                    };
+                }
+                const undeprecated = await service.undeprecate(teamId, input.skillId);
+                if (!undeprecated) {
+                    return {
+                        success: false,
+                        dataSource,
+                        error: `Skill "${input.skillId}" not found in private registry.`,
+                    };
+                }
                 return {
-                    success: false,
+                    success: true,
                     dataSource,
-                    error: 'skillId is required for action "undeprecate".',
+                    message: `Skill "${input.skillId}" has been undeprecated and is now visible in search results.`,
                 };
             }
-            const undeprecated = await service.undeprecate(teamId, input.skillId);
-            if (!undeprecated) {
+            // SMI-5852, AC-11: discover the team's publish namespace without attempting a
+            // publish (the required skill_id prefix, e.g. "acme" for "acme/my-skill").
+            case 'namespace': {
+                const namespace = await service.getNamespace(teamId);
+                if (!namespace) {
+                    return {
+                        success: false,
+                        dataSource,
+                        error: "Unable to resolve this team's private registry namespace.",
+                    };
+                }
                 return {
-                    success: false,
+                    success: true,
                     dataSource,
-                    error: `Skill "${input.skillId}" not found in private registry.`,
+                    namespace,
+                    message: `Your team's private registry namespace is "${namespace}".`,
                 };
             }
-            return {
-                success: true,
-                dataSource,
-                message: `Skill "${input.skillId}" has been undeprecated and is now visible in search results.`,
-            };
         }
+    }
+    catch (err) {
+        return {
+            success: false,
+            dataSource,
+            error: err instanceof Error ? err.message : 'Registry operation failed.',
+        };
     }
 }
 // SMI-5017 W2.S2: wrap at export boundary
