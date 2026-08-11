@@ -40,6 +40,10 @@ export declare function resolveLicenseTeamId(licenseKey?: string): Promise<strin
  * Mirrors the credential handling `context.async.ts` already performs for the API client, so the
  * MCP process has exactly one notion of "the logged-in user" (SMI-4402).
  *
+ * SMI-5905 Wave 1: the refresh-or-null logic (including the `TOKEN_EXPIRY_SKEW_MS=60s` skew) now
+ * lives in `@skillsmith/core`'s `resolveFreshAccessToken()` — extracted so the CLI can reuse it
+ * too. This function is an unchanged-behavior delegate; no call site here needs to change.
+ *
  * @returns the access token, or null when the user has not run `skillsmith login` on this machine
  *          (or the stored refresh token is no longer valid)
  */

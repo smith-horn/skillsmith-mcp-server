@@ -39,8 +39,17 @@
  * Fail-soft by construction: an audit write must never turn a successful publish into a failed
  * one. Failures are logged to stderr (the MCP transport's log channel) and swallowed.
  */
-/** Registry write operations worth an audit row. Reads are deliberately not audited. */
-export type RegistryAuditOperation = 'publish' | 'deprecate' | 'undeprecate';
+/**
+ * Registry operations worth an audit row.
+ *
+ * Metadata reads (`list`/`get`) are still deliberately not audited — they carry no file bytes.
+ * `content_read` (SMI-5905 Wave 3) is: it is the operation that hands a team's packaged skill
+ * content to a caller, so it gets the same coverage the mutations do. `event_type` and `action`
+ * are byte-identical to what the `private-registry-get` Edge Function writes
+ * (supabase/functions/private-registry-get/access.ts), so both transports land in one queryable
+ * stream and neither can be audited without the other showing up in the same query.
+ */
+export type RegistryAuditOperation = 'publish' | 'deprecate' | 'undeprecate' | 'content_read';
 /**
  * Which credential authorized the call.
  * - `license_key`: the shared team license key (team-scoped, no per-user identity).
@@ -60,8 +69,19 @@ export interface RegistryAuditEvent {
      * rather than backfilled with the license-key actor, which did not authorize the call.
      */
     actorUserId?: string | null;
+    /**
+     * SMI-5905 Wave 3: which of the two user-client getters authorized this call —
+     * `getAdminUserClient()` or `getMemberUserClient()`. Recorded so the "no call site may use the
+     * wrong one" invariant is observable in the audit trail itself, not only in a unit test.
+     * Absent on the license-key path, which has no user role at all.
+     */
+    authRole?: 'admin' | 'member';
     /** Short reason for a non-success result. Never include credential material. */
     detail?: string;
+    /** Number of files handed to the caller. Count ONLY — never the filenames, never the bytes. */
+    fileCount?: number;
+    /** The row's stored content_hash. A digest of SKILL.md, not the content itself. */
+    contentHash?: string | null;
 }
 /**
  * One-way fingerprint of the presented license key.

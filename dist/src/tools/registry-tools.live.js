@@ -8,7 +8,7 @@
  * Backs `private_registry_publish` / `private_registry_manage` with the real
  * `private_registry_skills` table (migration 20260724000000).
  *
- * TWO CREDENTIALS, TWO PATHS (SMI-5822 fix, SMI-5882 Wave 3):
+ * TWO CREDENTIALS, THREE PATHS (SMI-5822 fix, SMI-5882 Wave 3; third path added SMI-5905 Wave 3):
  *
  * - **Member-level reads and publishes** (`list`, `get`, `publish`, `getNamespace`) use the
  *   Supabase service-role client. Service-role bypasses RLS, so **tenant isolation is enforced
@@ -35,22 +35,31 @@
  *   Cost, stated plainly: deprecate/undeprecate now require `skillsmith login` in addition to
  *   SKILLSMITH_LICENSE_KEY, and surface an actionable error when no user credential is present.
  *
+ * - **Content reads** (`getContent`, SMI-5905 Wave 3) are a third path: the signed-in user's own
+ *   JWT (so `_member_read` decides visibility against a real `auth.uid()`), but MEMBER-level, not
+ *   admin. `getAdminUserClient()` / `getMemberUserClient()` (`registry-tools.live.auth.ts`) are two
+ *   explicitly-named getters for exactly this reason — the choice cannot be defaulted or omitted at
+ *   a call site. What decides whether a content read is *entitled* is in
+ *   `registry-tools.live.content.ts`, and is scoped to the row's own team, not the caller's tier.
+ *
  * Single-phase write: metadata + content land in one INSERT (ADR-129) — no two-phase
  * Supabase+S3 write/rollback. Published (team_id, skill_id, version) triples are
  * immutable; a re-publish raises a unique violation surfaced as a clear error.
  */
 import { sha256Hex } from '@skillsmith/core';
-import { getSupabaseAdminClient, getSupabaseUserClient } from '../supabase-client.js';
-import { resolveUserAccessToken } from './team-resolver.js';
-import { accessTokenSubject, recordRegistryAudit } from './registry-tools.live.audit.js';
+import { getSupabaseAdminClient } from '../supabase-client.js';
+import { recordRegistryAudit } from './registry-tools.live.audit.js';
+import { getAdminUserClient, getMemberUserClient } from './registry-tools.live.auth.js';
+import { REGISTRY_METADATA_COLUMNS, REGISTRY_TABLE, } from './registry-tools.content.types.js';
+import { getSkillContent } from './registry-tools.live.content.js';
 /** 2 MB raw-content cap (ADR-129 Risks). Primary user-facing guard; the migration's
  *  pg_column_size CHECK is a stored-size backstop. */
 const MAX_CONTENT_BYTES = 2 * 1024 * 1024;
-const TABLE = 'private_registry_skills';
-/** Metadata columns only — excludes `content` (up to 2 MB/row) since mapRow() never
- *  reads it and RegistrySkill never exposes it. An unqualified select() would pull
- *  every matching row's full package content over the wire for nothing. */
-const METADATA_COLUMNS = 'id, team_id, skill_id, version, description, content_hash, deprecated, published_by, published_at';
+// Table name + metadata column list live in registry-tools.content.types.ts so the content module
+// shares them without a runtime import cycle back into this file. Aliased to the names this file
+// has always used. METADATA_COLUMNS excludes `content` — see that file for why that matters.
+const TABLE = REGISTRY_TABLE;
+const METADATA_COLUMNS = REGISTRY_METADATA_COLUMNS;
 /** PostgREST's code for "no rows" (or >1 row) via .single() — a real absence, not a
  *  failure. Any other error code/message is a genuine failure and must not be
  *  silently mapped to null, or an outage would look identical to "not found". */
@@ -92,32 +101,6 @@ async function getClient() {
     }
 }
 /**
- * Get a Supabase client bound to the signed-in user's JWT, for admin-gated operations.
- *
- * Throws an actionable error rather than silently falling back to the service-role client — a
- * fallback would restore exactly the SMI-5822 escalation this path exists to remove.
- *
- * Returns the token's subject alongside the client so the audit trail can name the principal that
- * actually authorized the write. Without it, these rows were attributed to the license key, which
- * did not (cross-provider review finding #3).
- */
-async function getUserClient(operation) {
-    const token = await resolveUserAccessToken();
-    if (!token) {
-        throw new Error(`Only team admins can ${operation} a private-registry skill, so this operation needs a ` +
-            'signed-in user — a shared team license key identifies a team, not a person. ' +
-            'Run `skillsmith login` on this machine and retry.');
-    }
-    try {
-        const client = (await getSupabaseUserClient(token));
-        return { client, actorUserId: accessTokenSubject(token) };
-    }
-    catch (err) {
-        const message = err instanceof Error ? err.message : 'unknown error';
-        throw new Error(`Failed to ${operation} skill: ${message}`);
-    }
-}
-/**
  * Flip `deprecated` for every version of a skill within one team, over the authenticated user
  * path so `private_registry_skills_admin_update` is the authorization check (SMI-5822).
  *
@@ -130,7 +113,10 @@ async function getUserClient(operation) {
  */
 async function setDeprecated(teamId, skillId, value) {
     const operation = value ? 'deprecate' : 'undeprecate';
-    const { client, actorUserId } = await getUserClient(operation);
+    // ADMIN getter — never getMemberUserClient(). `authRole` on every audit row below is read back
+    // off this binding rather than hard-coded, so a swapped call site would show up in the audit
+    // trail rather than only in a test that could itself be edited to match.
+    const { client, actorUserId, role } = await getAdminUserClient(operation);
     // .select() is REQUIRED here: PostgREST only returns affected-row data (the
     // `Prefer: return=representation` the JS client sets via .select()) when asked; without it,
     // `resp.data` is null on every call — including a successful update — and this method would
@@ -148,6 +134,7 @@ async function setDeprecated(teamId, skillId, value) {
             skillId,
             result: 'error',
             authPath: 'user_jwt',
+            authRole: role,
             actorUserId,
             detail: resp.error.code ?? 'query_error',
         });
@@ -160,6 +147,7 @@ async function setDeprecated(teamId, skillId, value) {
             skillId,
             result: 'success',
             authPath: 'user_jwt',
+            authRole: role,
             actorUserId,
         });
         return true;
@@ -181,6 +169,7 @@ async function setDeprecated(teamId, skillId, value) {
             skillId,
             result: 'error',
             authPath: 'user_jwt',
+            authRole: role,
             actorUserId,
             detail: probe.error.code ?? 'probe_error',
         });
@@ -195,6 +184,7 @@ async function setDeprecated(teamId, skillId, value) {
             skillId,
             result: 'denied',
             authPath: 'user_jwt',
+            authRole: role,
             actorUserId,
             detail: 'not_team_admin',
         });
@@ -335,6 +325,14 @@ export function createLiveRegistryService() {
                 return null;
             const latest = resp.data.reduce((a, b) => (a.published_at >= b.published_at ? a : b));
             return mapRow(teamId, latest);
+        },
+        // SMI-5905 Wave 3. MEMBER getter — never getAdminUserClient(): reading a skill you may
+        // install is not an admin action, and claiming it is would lock every non-admin member out of
+        // their own team's registry. The entitlement check that DOES gate this lives in
+        // registry-tools.live.content.ts and is scoped to the row's own team, not the caller's tier.
+        async getContent(teamId, skillId, version) {
+            const binding = await getMemberUserClient('install');
+            return getSkillContent({ binding, teamId, skillId, version });
         },
         // Deprecates every version of the skill within this team (hidden from search, remains
         // installable). Admin-gated: runs as the signed-in user so RLS authorizes it (SMI-5822).

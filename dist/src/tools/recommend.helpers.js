@@ -2,8 +2,8 @@
  * @fileoverview Recommend Tool Helper Functions
  * @module @skillsmith/mcp-server/tools/recommend.helpers
  */
+import { deriveSecuritySummaryFromApiSkill, deriveSecuritySummaryFromSkillRow, } from '@skillsmith/core';
 import { mapTrustTierFromDb } from '../utils/validation.js';
-import { deriveSecuritySummaryFromApiSkill } from '../utils/security-summary.js';
 // ============================================================================
 // Empty-Result Guidance (SMI-5556)
 // ============================================================================
@@ -177,6 +177,10 @@ export function buildApiRecommendation(skill, stack) {
  * that was never scanned at all. When a summary IS returned, riskScore/
  * scannedAt/passed pass through RAW from SkillData — never coerce/default to
  * 0/a fabricated timestamp, which would read as "confirmed clean."
+ * SMI-5897 (Wave 4 fix): the never-scanned-check + object construction now
+ * goes through the shared `deriveSecuritySummaryFromSkillRow()` instead of
+ * this file's own inline ternary, so `search.helpers.ts`/`get-skill.ts`'s
+ * local-DB paths can't re-diverge from this one.
  */
 export function buildDbFallbackRecommendation(result, role) {
     const skill = result.skill;
@@ -196,14 +200,7 @@ export function buildDbFallbackRecommendation(result, role) {
         installable: skill.installable !== false ? true : false,
         // SkillData.description is typed `string` (not nullable), so `??` (not `||`).
         description: skill.description ?? '',
-        security: skill.securityScannedAt == null
-            ? undefined
-            : {
-                passed: skill.securityPassed,
-                riskScore: skill.riskScore,
-                findingsCount: skill.securityFindingsCount,
-                scannedAt: skill.securityScannedAt,
-            },
+        security: deriveSecuritySummaryFromSkillRow(skill),
     };
 }
 // ============================================================================

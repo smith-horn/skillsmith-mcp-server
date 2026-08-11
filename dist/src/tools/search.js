@@ -9,7 +9,7 @@ import { searchLocalSkills } from './LocalSkillSearch.js';
 // SMI-5178: compatibility helpers extracted to keep search.ts under the 500-line
 // governance limit (search.helpers.ts imports only from @skillsmith/core — no
 // circular dependency).
-import { filterByCompatibility, filterInstallable, mapApiSkillToSearchResult, mapLocalSkillToSearchResult, resolveDefaultCompatibility, buildEmptySearchSuggestion, } from './search.helpers.js';
+import { filterByCompatibility, filterInstallable, mapApiSkillToSearchResult, mapLocalSkillToSearchResult, resolveDefaultCompatibility, buildEmptySearchSuggestion, resolveSearchLimit, MIN_SEARCH_LIMIT, MAX_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT, } from './search.helpers.js';
 export { formatSearchResults } from './search.formatter.js';
 /**
  * Search tool schema for MCP
@@ -83,6 +83,14 @@ export const searchToolSchema = {
                         description: 'LLM slugs (e.g. ["claude", "gpt-4o"])',
                     },
                 },
+            },
+            // SMI-5896: advertised in the description but absent here. Bounds are
+            // advisory to the client only — resolveSearchLimit() enforces them.
+            limit: {
+                type: 'number',
+                description: `Maximum results to return (default ${DEFAULT_SEARCH_LIMIT}). Out-of-range values are clamped, not rejected.`,
+                minimum: MIN_SEARCH_LIMIT,
+                maximum: MAX_SEARCH_LIMIT,
             },
         },
         required: [], // Query is optional if filters are provided
@@ -174,13 +182,17 @@ async function executeSearchImpl(input, context) {
         }
         filters.maxRiskScore = input.max_risk;
     }
+    // SMI-5896: hardcoded to 10 in both branches below despite the description
+    // already advertising `limit` — it was simply never read. resolveSearchLimit
+    // doubles as this parameter's validation boundary (args aren't validated).
+    const limit = resolveSearchLimit(input.limit);
     const searchStart = performance.now();
     // SMI-1183: Try API first, fall back to local DB
     if (!context.apiClient.isOffline()) {
         try {
             const apiResponse = await context.apiClient.search({
                 query: hasQuery ? input.query.trim() : '',
-                limit: 10,
+                limit,
                 offset: 0,
                 trustTier: filters.trustTier ? mapTrustTierToDb(filters.trustTier) : undefined,
                 minQualityScore: filters.minScore,
@@ -216,7 +228,7 @@ async function executeSearchImpl(input, context) {
             const discoveryOnlyHidden = compatFiltered.length - mergedResults.length;
             const endTime = performance.now();
             const response = {
-                results: mergedResults.slice(0, 10), // Limit to 10 total
+                results: mergedResults.slice(0, limit), // SMI-5896: was hardcoded to 10
                 // SMI-4954/C1: key off effectiveInstallableOnly so default-ON also
                 // reports the filtered total (not the registry grand-total).
                 total: effectiveInstallableOnly
@@ -266,7 +278,7 @@ async function executeSearchImpl(input, context) {
     const searchQuery = hasQuery ? input.query.trim() : '';
     const searchResults = context.searchService.search({
         query: searchQuery,
-        limit: 10,
+        limit,
         offset: 0,
         trustTier: dbTrustTier,
         minQualityScore: filters.minScore,
@@ -304,7 +316,7 @@ async function executeSearchImpl(input, context) {
     const discoveryOnlyHidden = compatFiltered.length - mergedResults.length;
     const endTime = performance.now();
     const response = {
-        results: mergedResults.slice(0, 10), // Limit to 10 total
+        results: mergedResults.slice(0, limit), // SMI-5896: was hardcoded to 10
         // SMI-4954/C1: key off effectiveInstallableOnly so default-ON reports filtered total.
         total: effectiveInstallableOnly
             ? mergedResults.length

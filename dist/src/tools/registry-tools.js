@@ -22,6 +22,8 @@ import { resolveLicenseTeamId, readLicenseKey } from './team-resolver.js';
 import { withTelemetry } from '@skillsmith/core/telemetry';
 import { createStubRegistryService } from './registry-tools.stub.js';
 import { createLiveRegistryService } from './registry-tools.live.js';
+import { executeRegistryInstall } from './registry-tools.install-action.js';
+import { hasSafeSkillIdSegments } from './registry-tools.skill-id.js';
 // Re-export stub factory for external consumers and tests
 export { createStubRegistryService } from './registry-tools.stub.js';
 // ============================================================================
@@ -38,6 +40,7 @@ export const privateRegistryPublishInputSchema = z.object({
     skillId: z
         .string()
         .regex(/^[^/]+\/[^/]+$/, 'Must be author/name format')
+        .refine(hasSafeSkillIdSegments, 'skillId segments must not be empty, ".", or ".."')
         .describe('Skill identifier in author/name format'),
     version: z
         .string()
@@ -47,13 +50,15 @@ export const privateRegistryPublishInputSchema = z.object({
     description: z.string().max(500).optional().describe('Optional skill description'),
 });
 export const privateRegistryManageInputSchema = z.object({
-    action: z.enum(['list', 'get', 'deprecate', 'undeprecate', 'namespace']),
+    action: z.enum(['list', 'get', 'deprecate', 'undeprecate', 'namespace', 'install']),
     skillId: z
         .string()
         .regex(/^[^/]+\/[^/]+$/, 'Must be author/name format')
+        .refine(hasSafeSkillIdSegments, 'skillId segments must not be empty, ".", or ".."')
         .optional()
-        .describe('Skill identifier (required for get/deprecate/undeprecate)'),
-    version: z.string().optional().describe('Optional version filter'),
+        .describe('Skill identifier (required for get/deprecate/undeprecate/install)'),
+    version: z.string().optional().describe('Version filter; "install" defaults to most recent'),
+    force: z.boolean().optional().describe('SMI-5905: reinstall over an existing install'),
 });
 // ============================================================================
 // Tool schemas for MCP registration
@@ -89,25 +94,27 @@ export const privateRegistryPublishToolSchema = {
 };
 export const privateRegistryManageToolSchema = {
     name: 'private_registry_manage',
-    description: 'Manage skills in your private registry (list, get, deprecate, undeprecate, namespace). ' +
-        'Requires Enterprise tier (private_registry feature).',
+    description: 'Manage skills in your private registry (list, get, install, deprecate, undeprecate, ' +
+        'namespace). Requires Enterprise tier (private_registry feature).',
     inputSchema: {
         type: 'object',
         properties: {
             action: {
                 type: 'string',
-                enum: ['list', 'get', 'deprecate', 'undeprecate', 'namespace'],
+                enum: ['list', 'get', 'deprecate', 'undeprecate', 'namespace', 'install'],
                 description: 'Registry operation to perform. "namespace" returns your team\'s publish ' +
-                    'namespace (the required skill_id prefix) without attempting a publish.',
+                    'namespace (the required skill_id prefix) without attempting a publish. ' +
+                    '"install" downloads the skill and writes it to your skills directory.',
             },
             skillId: {
                 type: 'string',
-                description: 'Skill ID in author/name format (required for get/deprecate/undeprecate)',
+                description: 'Skill ID in author/name format (get/deprecate/undeprecate/install)',
             },
             version: {
                 type: 'string',
-                description: 'Optional version filter',
+                description: 'Version filter; "install" defaults to the most recently published',
             },
+            force: { type: 'boolean', description: 'Reinstall over an existing install' },
         },
         required: ['action'],
     },
@@ -218,7 +225,7 @@ async function executePrivateRegistryPublishImpl(input, _context) {
 /**
  * Execute a private_registry_manage operation.
  */
-async function executePrivateRegistryManageImpl(input, _context) {
+async function executePrivateRegistryManageImpl(input, context) {
     const dataSource = isSupabaseConfigured() ? 'live' : 'stub';
     let teamId;
     try {
@@ -258,6 +265,9 @@ async function executePrivateRegistryManageImpl(input, _context) {
                 }
                 return { success: true, dataSource, skill };
             }
+            // SMI-5905 Wave 3. Handler lives in a companion file (this one was 466/500 lines).
+            case 'install':
+                return executeRegistryInstall({ input, teamId, dataSource, service, context });
             case 'deprecate': {
                 if (!input.skillId) {
                     return {

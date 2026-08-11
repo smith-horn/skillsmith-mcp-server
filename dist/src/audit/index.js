@@ -18,6 +18,16 @@ export { renderAuditReport, writeAuditReport } from './audit-report-writer.js';
 // SMI-5541 Wave 2C — local security audit (client-side rug-pull / hostile-update
 // producer that feeds the shipped 2A comparator; content is client-only per ADR-124).
 export { runSecurityAudit } from './security-audit.js';
+// SMI-5883 Wave 2 — local security-acceptance store (per-user allowlist for
+// reviewed SecurityScanner false positives). Suppression is applied in
+// runSecurityAudit's own shared result assembly, so any consumer of it (not
+// only the CLI) sees the same accepted annotation -- but never by
+// compareScanReports, which always sees the raw, un-annotated report
+// (code-review round 2; see security-acceptance.types.ts's module comment).
+export { computeAcceptKey, computeStoreDigest, defaultAcceptancePath, findingFingerprint, fingerprintTuple, isValidAcceptKeyFormat, loadAcceptanceStore, } from './security-acceptance.js';
+export { acceptFinding, revokeAcceptance } from './security-acceptance.mutate.js';
+export { isAcceptDisabled } from './security-audit.candidates.js';
+export { ACCEPTANCE_STORE_VERSION, emptyAcceptanceStore, MAX_RECORDS as ACCEPTANCE_MAX_RECORDS, MAX_STORE_BYTES as ACCEPTANCE_MAX_STORE_BYTES, } from './security-acceptance.types.js';
 export { defaultBaselinePath, loadSecurityBaseline, saveSecurityBaseline, SECURITY_BASELINE_VERSION, } from './security-baseline.js';
 // SMI-5541 Wave 2C Stage 2 — continuous-audit email digest push orchestrator.
 export { buildAuditDigestPayload, hashDigest, maybeAutoNotifyAudit, MAX_DIGEST_FINDINGS, } from './audit-notify.js';

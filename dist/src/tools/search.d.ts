@@ -68,6 +68,12 @@ export declare const searchToolSchema: {
                     };
                 };
             };
+            limit: {
+                type: string;
+                description: string;
+                minimum: number;
+                maximum: number;
+            };
         };
         required: never[];
     };
@@ -93,6 +99,12 @@ export interface SearchInput {
     max_risk?: number;
     /** SMI-2760: Filter by IDE/LLM compatibility */
     compatible_with?: CompatibilityFilter;
+    /**
+     * SMI-5896: Maximum results to return. Defaults to
+     * {@link DEFAULT_SEARCH_LIMIT} (10) when omitted; clamped (not rejected)
+     * to [{@link MIN_SEARCH_LIMIT}, {@link MAX_SEARCH_LIMIT}] otherwise.
+     */
+    limit?: number;
 }
 export declare const executeSearch: (input: SearchInput, context: ToolContext) => Promise<SearchResponse>;
 //# sourceMappingURL=search.d.ts.map

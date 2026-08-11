@@ -18,6 +18,7 @@ import { SkillVersionRepository } from '@skillsmith/core';
 import { withTelemetry } from '@skillsmith/core/telemetry';
 import { hashContent } from './install.conflict-helpers.js';
 import { loadManifest } from './install.helpers.js';
+import { getManifestInstalledSkillIds } from './manifest-skill-ids.helpers.js';
 // ============================================================================
 // Input / Output types
 // ============================================================================
@@ -131,8 +132,10 @@ async function executeOutdatedImpl(input, context) {
     }
     const versionRepo = new SkillVersionRepository(context.db);
     const depRepo = context.skillDependencyRepository;
-    // Build set of installed skill IDs for dependency checking — filter out corrupt entries
-    const installedSkillIds = new Set(entries.filter((e) => e.id).map((e) => e.id));
+    // Build set of installed skill IDs for dependency checking — filter out
+    // corrupt entries (SMI-5895 Wave 2 Step 2: shared with skill_updates via
+    // getManifestInstalledSkillIds, so the two tools can't drift on this).
+    const installedSkillIds = new Set(getManifestInstalledSkillIds(manifest));
     const skills = [];
     let outdatedCount = 0;
     let upToDateCount = 0;

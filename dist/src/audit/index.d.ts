@@ -19,7 +19,14 @@ export type { AuditHistoryOptions, WriteAuditHistoryResult } from './audit-histo
 export { renderAuditReport, writeAuditReport } from './audit-report-writer.js';
 export type { AuditReportRenderOptions, AuditReportWriteOptions, AuditReportWriteResult, } from './audit-report-writer.js';
 export { runSecurityAudit } from './security-audit.js';
-export type { RunSecurityAuditOptions, RunSecurityAuditResult, SecurityAuditFinding, SecurityAuditSummary, SecurityVerdict, } from './security-audit.types.js';
+export type { Candidate, RunSecurityAuditOptions, RunSecurityAuditResult, SecurityAuditFinding, SecurityAuditSummary, SecurityVerdict, } from './security-audit.types.js';
+export type { InventoryEntry, InventoryKind } from '../utils/local-inventory.types.js';
+export { computeAcceptKey, computeStoreDigest, defaultAcceptancePath, findingFingerprint, fingerprintTuple, isValidAcceptKeyFormat, loadAcceptanceStore, } from './security-acceptance.js';
+export { acceptFinding, revokeAcceptance } from './security-acceptance.mutate.js';
+export type { AcceptOutcome, RevokeOutcome } from './security-acceptance.mutate.js';
+export { isAcceptDisabled } from './security-audit.candidates.js';
+export { ACCEPTANCE_STORE_VERSION, emptyAcceptanceStore, MAX_RECORDS as ACCEPTANCE_MAX_RECORDS, MAX_STORE_BYTES as ACCEPTANCE_MAX_STORE_BYTES, } from './security-acceptance.types.js';
+export type { AcceptanceRecord, AcceptanceStore, AcceptanceWarning, AcceptanceWarningCode, } from './security-acceptance.types.js';
 export { defaultBaselinePath, loadSecurityBaseline, saveSecurityBaseline, SECURITY_BASELINE_VERSION, } from './security-baseline.js';
 export type { SecurityBaseline, SecurityBaselineEntry, StoredScanReport, } from './security-baseline.js';
 export { buildAuditDigestPayload, hashDigest, maybeAutoNotifyAudit, MAX_DIGEST_FINDINGS, } from './audit-notify.js';

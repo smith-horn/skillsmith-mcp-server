@@ -3,7 +3,7 @@
  * No DB / context — fast, isolated from the seeded better-sqlite3 fixtures.
  */
 import { describe, it, expect } from 'vitest';
-import { filterByCompatibility, filterInstallable, resolveDefaultCompatibility, buildEmptySearchSuggestion, } from './search.helpers.js';
+import { filterByCompatibility, filterInstallable, resolveDefaultCompatibility, buildEmptySearchSuggestion, mapLocalSkillToSearchResult, } from './search.helpers.js';
 function skill(id, compatibility, installable) {
     return {
         id,
@@ -75,6 +75,59 @@ describe('resolveDefaultCompatibility (SMI-5178)', () => {
     });
     it('returns undefined for an unknown client (no silent mis-restriction)', () => {
         expect(resolveDefaultCompatibility('emacs')).toBeUndefined();
+    });
+});
+function localSkill(overrides = {}) {
+    return {
+        id: 'local-1',
+        name: 'local-skill',
+        description: 'A local skill',
+        author: 'tester',
+        repoUrl: null,
+        qualityScore: 0.5,
+        trustTier: 'local',
+        tags: [],
+        installable: false,
+        riskScore: null,
+        securityFindingsCount: 0,
+        securityScannedAt: null,
+        securityPassed: null,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        ...overrides,
+    };
+}
+describe('mapLocalSkillToSearchResult (SMI-5897 Wave 4 fix)', () => {
+    it('returns security: undefined for a never-scanned local skill (regression guard)', () => {
+        // Pre-fix this built { passed: null, riskScore: null, findingsCount: 0,
+        // scannedAt: null } unconditionally — a placeholder object that narrates
+        // as "scanned, no verdict yet" for a skill that was NEVER scanned.
+        const result = {
+            skill: localSkill({ securityScannedAt: null }),
+            rank: 0,
+            highlights: {},
+        };
+        const mapped = mapLocalSkillToSearchResult(result);
+        expect(mapped.security).toBeUndefined();
+    });
+    it('returns a real security summary when the local skill has been scanned', () => {
+        const result = {
+            skill: localSkill({
+                securityScannedAt: '2026-06-01T00:00:00.000Z',
+                securityPassed: true,
+                riskScore: 5,
+                securityFindingsCount: 0,
+            }),
+            rank: 0,
+            highlights: {},
+        };
+        const mapped = mapLocalSkillToSearchResult(result);
+        expect(mapped.security).toEqual({
+            passed: true,
+            riskScore: 5,
+            findingsCount: 0,
+            scannedAt: '2026-06-01T00:00:00.000Z',
+        });
     });
 });
 describe('buildEmptySearchSuggestion (SMI-5556)', () => {

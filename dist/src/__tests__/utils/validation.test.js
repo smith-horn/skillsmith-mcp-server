@@ -4,7 +4,7 @@
  * Tests for validation functions to increase branch coverage.
  */
 import { describe, it, expect } from 'vitest';
-import { parseSkillId, mapTrustTierToDb, mapTrustTierFromDb, extractCategoryFromTags, normalizeApiCategory, } from '../../utils/validation.js';
+import { parseSkillId, mapTrustTierToDb, mapTrustTierFromDb, extractCategoryFromTags, normalizeApiCategory, DB_TO_MCP_TRUST_TIER, } from '../../utils/validation.js';
 describe('Validation Utilities', () => {
     describe('parseSkillId', () => {
         it('should parse 2-part skill ID (author/name)', () => {
@@ -63,6 +63,23 @@ describe('Validation Utilities', () => {
             // The function accepts string input and handles invalid values gracefully
             const invalidValue = 'invalid';
             expect(mapTrustTierFromDb(invalidValue)).toBe('unknown');
+        });
+    });
+    describe('trust tier round-trip (SMI-5897 / C-16 regression guard)', () => {
+        // Table-driven over every TrustTier enum value — enumerated from
+        // DB_TO_MCP_TRUST_TIER (mapTrustTierFromDb's own exhaustive Record,
+        // SMI-5897 Wave 4 fix), the actual DBTrustTier input domain this mapper
+        // covers. Previously enumerated from TrustTierDescriptions, a THIRD,
+        // separately-declared object that happened to match by coincidence, not
+        // by any structural guarantee tied to the mapper under test — this is
+        // the general regression guard for the exact asymmetric-mapper bug found
+        // here: mapTrustTierFromDb had cases for verified/community/
+        // experimental/curated/local only, silently collapsing 'official' and
+        // 'unverified' to 'unknown' even though mapTrustTierToDb already
+        // round-tripped both correctly.
+        const allTiers = Object.keys(DB_TO_MCP_TRUST_TIER);
+        it.each(allTiers)('mapTrustTierFromDb(mapTrustTierToDb(%s)) === %s', (tier) => {
+            expect(mapTrustTierFromDb(mapTrustTierToDb(tier))).toBe(tier);
         });
     });
     describe('extractCategoryFromTags', () => {

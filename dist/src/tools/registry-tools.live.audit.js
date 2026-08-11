@@ -133,6 +133,13 @@ export async function recordRegistryAudit(event) {
                 // the team key their session was configured with.
                 license_key_fingerprint: fingerprint,
                 actor_user_id: event.actorUserId ?? null,
+                auth_role: event.authRole ?? null,
+                // Distinguishes these rows from the `private-registry-get` Edge Function's, which write
+                // the same event_type with `transport: 'edge_function'` (SMI-5905 Wave 2).
+                transport: 'mcp_server',
+                // Count and digest only — the content map itself is never recorded.
+                file_count: event.fileCount ?? null,
+                content_hash: event.contentHash ?? null,
                 // Recorded per-row so a future reader can tell an unattributed row from one written
                 // before published_by existed, without diffing migration timestamps.
                 published_by_available: event.authPath === 'user_jwt',

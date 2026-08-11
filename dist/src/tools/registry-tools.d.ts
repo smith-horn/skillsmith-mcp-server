@@ -18,6 +18,7 @@
  */
 import { z } from 'zod';
 import type { ToolContext } from '../context.js';
+import type { PrivateRegistryInstallSummary, RegistrySkillContent } from './registry-tools.content.types.js';
 export { createStubRegistryService } from './registry-tools.stub.js';
 /**
  * Packaged skill files as a flat { relativePath: fileText } map
@@ -28,7 +29,7 @@ export { createStubRegistryService } from './registry-tools.stub.js';
 export declare const skillContentSchema: z.ZodRecord<z.ZodString, z.ZodString>;
 export type SkillContent = z.infer<typeof skillContentSchema>;
 export declare const privateRegistryPublishInputSchema: z.ZodObject<{
-    skillId: z.ZodString;
+    skillId: z.ZodEffects<z.ZodString, string, string>;
     version: z.ZodString;
     content: z.ZodRecord<z.ZodString, z.ZodString>;
     description: z.ZodOptional<z.ZodString>;
@@ -45,16 +46,19 @@ export declare const privateRegistryPublishInputSchema: z.ZodObject<{
 }>;
 export type PrivateRegistryPublishInput = z.infer<typeof privateRegistryPublishInputSchema>;
 export declare const privateRegistryManageInputSchema: z.ZodObject<{
-    action: z.ZodEnum<["list", "get", "deprecate", "undeprecate", "namespace"]>;
-    skillId: z.ZodOptional<z.ZodString>;
+    action: z.ZodEnum<["list", "get", "deprecate", "undeprecate", "namespace", "install"]>;
+    skillId: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
     version: z.ZodOptional<z.ZodString>;
+    force: z.ZodOptional<z.ZodBoolean>;
 }, "strip", z.ZodTypeAny, {
-    action: "list" | "get" | "deprecate" | "undeprecate" | "namespace";
+    action: "list" | "get" | "deprecate" | "undeprecate" | "install" | "namespace";
     version?: string | undefined;
+    force?: boolean | undefined;
     skillId?: string | undefined;
 }, {
-    action: "list" | "get" | "deprecate" | "undeprecate" | "namespace";
+    action: "list" | "get" | "deprecate" | "undeprecate" | "install" | "namespace";
     version?: string | undefined;
+    force?: boolean | undefined;
     skillId?: string | undefined;
 }>;
 export type PrivateRegistryManageInput = z.infer<typeof privateRegistryManageInputSchema>;
@@ -106,6 +110,10 @@ export declare const privateRegistryManageToolSchema: {
                 type: string;
                 description: string;
             };
+            force: {
+                type: string;
+                description: string;
+            };
         };
         required: string[];
     };
@@ -136,6 +144,8 @@ export interface PrivateRegistryManageResult {
     skill?: RegistrySkill;
     /** Present for action:'namespace' — the team's publish namespace (SMI-5852, AC-11). */
     namespace?: string;
+    /** Present for action:'install' (SMI-5905). An allowlist — never carries raw `content`. */
+    install?: PrivateRegistryInstallSummary;
     message?: string;
     error?: string;
 }
@@ -154,6 +164,11 @@ export interface PrivateRegistryService {
     publish(teamId: string, skillId: string, version: string, content: SkillContent, description?: string): Promise<RegistrySkill>;
     list(teamId: string, version?: string): Promise<RegistrySkill[]>;
     get(teamId: string, skillId: string, version?: string): Promise<RegistrySkill | null>;
+    /** SMI-5905: one version's packaged `content`, for install. `null` when nothing visible
+     *  matches (absent OR cross-team — deliberately indistinguishable). Throws when the row's OWN
+     *  team is no longer Enterprise-entitled: that check lives in the implementation, never in a
+     *  caller. Version semantics are `get()`'s — explicit pins, omitted = most recently published. */
+    getContent(teamId: string, skillId: string, version?: string): Promise<RegistrySkillContent | null>;
     deprecate(teamId: string, skillId: string): Promise<boolean>;
     undeprecate(teamId: string, skillId: string): Promise<boolean>;
     /**
@@ -176,8 +191,9 @@ export declare const executePrivateRegistryPublish: (input: {
     description?: string | undefined;
 }, _context: ToolContext) => Promise<PrivateRegistryPublishResult>;
 export declare const executePrivateRegistryManage: (input: {
-    action: "list" | "get" | "deprecate" | "undeprecate" | "namespace";
+    action: "list" | "get" | "deprecate" | "undeprecate" | "install" | "namespace";
     version?: string | undefined;
+    force?: boolean | undefined;
     skillId?: string | undefined;
-}, _context: ToolContext) => Promise<PrivateRegistryManageResult>;
+}, context: ToolContext) => Promise<PrivateRegistryManageResult>;
 //# sourceMappingURL=registry-tools.d.ts.map

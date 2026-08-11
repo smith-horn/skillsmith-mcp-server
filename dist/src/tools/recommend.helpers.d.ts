@@ -48,6 +48,10 @@ export declare function buildApiRecommendation(skill: ApiSearchResult, stack: st
  * that was never scanned at all. When a summary IS returned, riskScore/
  * scannedAt/passed pass through RAW from SkillData — never coerce/default to
  * 0/a fabricated timestamp, which would read as "confirmed clean."
+ * SMI-5897 (Wave 4 fix): the never-scanned-check + object construction now
+ * goes through the shared `deriveSecuritySummaryFromSkillRow()` instead of
+ * this file's own inline ternary, so `search.helpers.ts`/`get-skill.ts`'s
+ * local-DB paths can't re-diverge from this one.
  */
 export declare function buildDbFallbackRecommendation(result: SkillMatchResult, role: SkillRole | undefined): SkillRecommendation;
 /**

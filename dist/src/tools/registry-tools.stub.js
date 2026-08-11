@@ -2,33 +2,70 @@
  * @fileoverview In-memory stub for the private registry MCP tools
  * @module @skillsmith/mcp-server/tools/registry-tools.stub
  * @see SMI-5816: Private skill registry — real implementation (ADR-129)
+ * @see SMI-5905 Wave 3: the stub now persists `content`, so a publish→install round-trip is
+ *      testable without live Supabase
  *
- * Local-dev / test fallback used when Supabase is NOT configured. The real,
- * Postgres-backed implementation lives in registry-tools.live.ts and is selected
- * automatically once SUPABASE_URL + SUPABASE_ANON_KEY are present.
+ * Local-dev / test fallback used when Supabase is NOT configured. The real, Postgres-backed
+ * implementation lives in registry-tools.live.ts and is selected automatically once SUPABASE_URL +
+ * SUPABASE_ANON_KEY are present.
  *
- * NOTE: this stub does not persist file bytes and does NOT enforce version
- * immutability — those are guarantees of the real table (UNIQUE(team_id, skill_id,
- * version)) surfaced by the live service. Entries are keyed by (teamId, skillId) so
- * the stub is at least tenant-scoped (list/get/deprecate never cross a team boundary).
+ * WHAT THIS STUB DOES NOT DO, and must never be read as evidence about:
+ *   - **Entitlement.** `getContent()` here has no Enterprise/subscription check at all. That gate
+ *     is a live-service concern (registry-tools.live.content.ts) because it is a query against
+ *     `teams`/`subscriptions`, which the stub has no analogue of. A test that passes against this
+ *     stub proves nothing about entitlement; those tests drive the live service instead.
+ *   - **Version immutability.** The real table's UNIQUE(team_id, skill_id, version) is what
+ *     enforces that; re-publishing the same triple here just overwrites.
+ *   - **RLS / cross-team isolation.** Approximated only: entries are keyed by (teamId, skillId) so
+ *     list/get/deprecate/getContent never cross a team boundary, but there is no policy engine
+ *     behind it.
  */
 /** @internal Exported for testing */
 export function createStubRegistryService() {
     // Keyed by `${teamId}::${skillId}` so the stub never leaks across teams.
     const registry = new Map();
     const key = (teamId, skillId) => `${teamId}::${skillId}`;
+    // Every published version's content, keyed by `${teamId}::${skillId}::${version}`.
+    const versions = new Map();
+    const versionKey = (teamId, skillId, version) => `${key(teamId, skillId)}::${version}`;
+    let publishSequence = 0;
+    /** The most recently published version of a skill, or undefined when none exist. */
+    function latestVersion(teamId, skillId) {
+        const prefix = `${key(teamId, skillId)}::`;
+        let best;
+        for (const [k, entry] of versions) {
+            if (!k.startsWith(prefix))
+                continue;
+            if (!best || entry.publishedAt > best.publishedAt) {
+                best = entry;
+            }
+            else if (entry.publishedAt === best.publishedAt && entry.sequence > best.sequence) {
+                best = entry;
+            }
+        }
+        return best;
+    }
     return {
-        async publish(teamId, skillId, version, _content, description) {
+        async publish(teamId, skillId, version, content, description) {
+            const publishedAt = new Date().toISOString();
             const skill = {
                 skillId,
                 version,
                 description: description ?? null,
                 deprecated: false,
-                publishedAt: new Date().toISOString(),
+                publishedAt,
                 publishedBy: 'current-user',
                 registryUrl: `https://registry.skillsmith.app/private/${teamId}/${skillId}@${version}`,
             };
             registry.set(key(teamId, skillId), skill);
+            versions.set(versionKey(teamId, skillId, version), {
+                teamId,
+                skillId,
+                version,
+                content,
+                publishedAt,
+                sequence: ++publishSequence,
+            });
             return skill;
         },
         async list(teamId, version) {
@@ -46,6 +83,27 @@ export function createStubRegistryService() {
             if (version && skill.version !== version)
                 return null;
             return skill;
+        },
+        // Same version semantics as the live service: an explicit `version` pins it, otherwise the
+        // most recently published wins. Returns null (never throws) for an absent skill/version, so
+        // the install handler's not-found branch behaves identically in stub and live mode.
+        async getContent(teamId, skillId, version) {
+            const entry = version
+                ? versions.get(versionKey(teamId, skillId, version))
+                : latestVersion(teamId, skillId);
+            if (!entry)
+                return null;
+            const metadata = registry.get(key(teamId, skillId));
+            return {
+                skillId: entry.skillId,
+                version: entry.version,
+                teamId: entry.teamId,
+                content: entry.content,
+                // No content_hash trigger backs the stub; null is honest, a fabricated digest would not be.
+                contentHash: null,
+                deprecated: metadata?.deprecated ?? false,
+                publishedAt: entry.publishedAt,
+            };
         },
         async deprecate(teamId, skillId) {
             const skill = registry.get(key(teamId, skillId));
