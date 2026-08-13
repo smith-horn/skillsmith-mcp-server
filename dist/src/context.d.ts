@@ -19,7 +19,7 @@
  * const result = await executeSearch(input, context);
  */
 export type { ToolContext, TelemetryConfig, BackgroundSyncConfig, ToolContextOptions, } from './context.types.js';
-export { getDefaultDbPath, ensureDbDirectory } from './context.helpers.js';
+export { getDefaultDbPath, ensureDbDirectory, buildDbInitializedLogMessage, } from './context.helpers.js';
 export { createToolContextAsync, getToolContextAsync, resetAsyncToolContext, } from './context.async.js';
 import type { ToolContext, ToolContextOptions } from './context.types.js';
 /**

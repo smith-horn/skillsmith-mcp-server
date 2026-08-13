@@ -36,12 +36,78 @@ export declare const MAX_SEARCH_LIMIT = 100;
  */
 export declare function resolveSearchLimit(limit: unknown): number;
 /**
- * SMI-2760: Filter search results by compatibility tags.
- * Skills with no compatibility data are included (`[]`/absent = unknown/unscoped,
- * NOT incompatible — they may be compatible but simply haven't declared it).
- * Skills that HAVE declared compatibility must include at least one requested slug.
+ * SMI-5929: Flatten a CompatibilityFilter's `ides`/`llms` arrays into one
+ * deduped set of "wanted" slugs. Shared by the rank helpers below and by
+ * search.ts (to forward the same slug set to the API as the `compatibility`
+ * query param, so the server-side rank — see the edge function's
+ * compatibility.ts — is computed against the SAME wanted set the client
+ * uses for its own local-bucket ranking).
  */
-export declare function filterByCompatibility(results: SkillSearchResult[], filter: CompatibilityFilter): SkillSearchResult[];
+export declare function compatibilityWantedSlugs(filter: CompatibilityFilter | undefined): Set<string>;
+/** Widened SearchService fetch size when a compat filter is active; a no-op `limit` otherwise. */
+export declare function computeLocalCompatFetchLimit(limit: number, filterActive: boolean): number;
+/**
+ * SMI-2760 / SMI-5929: 3-tier compat rank for a single skill against the
+ * wanted slug set:
+ *   0 — compatibility declares at least one requested slug
+ *   1 — compatibility is empty/absent (unscoped; "unknown ≠ incompatible")
+ *   2 — compatibility declares only OTHER (non-requested) slugs
+ * `wanted.size === 0` (no filter active) always ranks 1 — callers must
+ * short-circuit on an empty filter instead of relying on this rank (see
+ * sortByCompatRank / countCompatDeprioritized below).
+ */
+export declare function computeCompatRank(compatibility: string[] | undefined, wanted: Set<string>): 0 | 1 | 2;
+/**
+ * SMI-5929: Stable-sort `results` by compat rank ascending (rank 0 first,
+ * rank 2 last), preserving the existing relative order within each rank.
+ * Replaces `filterByCompatibility` (SMI-2760), which HARD-EXCLUDED rank-2
+ * rows — that exclusion ran client-side, after the API had already returned
+ * a fixed-size page, so it could only shrink an already-truncated page, never
+ * promote a compatible row back onto it (see
+ * docs/internal/implementation/smi-5898-wave5-design-proposal.md §A, option
+ * C-1). Never drops a row — a no-op when `filter` is empty/undefined.
+ *
+ * IMPORTANT: call this SEPARATELY on the local-results bucket and the
+ * API-results bucket, then concatenate local-first — compat-rank must only
+ * reorder WITHIN each source bucket, never promote an API result above a
+ * local one (local-first stays the outer sort key). See search.ts.
+ */
+export declare function sortByCompatRank<T extends {
+    compatibility?: string[];
+}>(results: T[], filter: CompatibilityFilter | undefined): T[];
+/**
+ * SMI-5929: Count of rank-2 (deprioritized) results present in `results`.
+ * Call this on the FINAL, already-sliced-to-`limit` page — the count backs
+ * `compatibilityDeprioritized`, defined as "how many of what you actually
+ * got back are rank 2", not a corpus-wide or pre-slice count. A no-op (0)
+ * when `filter` is empty/undefined.
+ */
+export declare function countCompatDeprioritized<T extends {
+    compatibility?: string[];
+}>(results: T[], filter: CompatibilityFilter | undefined): number;
+/**
+ * SMI-5929: Merge local + registry result buckets, rank each bucket by
+ * compatibility separately (local-first stays the OUTER sort key — an API
+ * result can never outrank a local one), apply the installable filter, slice
+ * to the caller-facing page size, and count rank-2 rows on that final page.
+ *
+ * Shared by both search.ts branches (API-backed and local-fallback) — they
+ * differ only in where `apiResults` came from, not in this merge/rank/page
+ * pipeline. Extracted (SMI-5929) to keep search.ts under the 500-line
+ * governance limit after the compat-rank changes.
+ */
+export declare function mergeRankAndPage(params: {
+    localResults: SkillSearchResult[];
+    apiResults: SkillSearchResult[];
+    compatibleWith: CompatibilityFilter | undefined;
+    installableOnly: boolean;
+    limit: number;
+}): {
+    pageResults: SkillSearchResult[];
+    mergedTotal: number;
+    discoveryOnlyHidden: number;
+    compatibilityDeprioritized: number;
+};
 /**
  * SMI-4954: Drop discovery-only skills when `installable_only` is requested.
  * A skill is installable when it has a registry install source (`repo_url`
@@ -104,9 +170,17 @@ export declare function mapLocalSkillToSearchResult(item: SearchResult): SkillSe
  * that matching is keyword-based (not semantic) and requires every query term
  * to co-occur, so multi-concept queries often return nothing even when a
  * relevant skill exists — plus any filter-specific hints.
+ *
+ * SMI-5929: no `compatibilityDeprioritized` hint here (unlike
+ * `discoveryOnlyHidden`, which can still legitimately explain an empty page).
+ * The compatibility filter is now a RANKING signal, not an exclusion — it
+ * cannot be the reason a page came back empty. `compatibilityDeprioritized`
+ * counts rank-2 rows *present in the final page*, which is provably 0 when
+ * the page itself is empty (this helper is only ever called when it is), so
+ * a "hidden by a compatibility filter" hint here would always be dead/wrong
+ * guidance. See `sortByCompatRank`/`countCompatDeprioritized` above.
  */
 export declare function buildEmptySearchSuggestion(context: {
     discoveryOnlyHidden?: number;
-    compatibilityHidden?: number;
 }): string;
 //# sourceMappingURL=search.helpers.d.ts.map

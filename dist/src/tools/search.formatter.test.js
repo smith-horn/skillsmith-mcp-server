@@ -1,7 +1,9 @@
 /**
- * SMI-5178: formatter coverage for the compatibility-hidden notice.
- * Asserts the "+ N more skill(s) hidden" line appears only when
- * compatibilityHidden > 0 (the restrictive cross-tool default / explicit filter).
+ * SMI-5178/SMI-5929: formatter coverage for the compatibility-deprioritized
+ * notice. Asserts the "+ N of the above result(s)..." line appears only when
+ * compatibilityDeprioritized > 0 (the restrictive cross-tool default /
+ * explicit filter) — these rows are already included in `results`, not
+ * additional/hidden ones (renamed from compatibilityHidden, SMI-5929).
  *
  * SMI-5327: license display in search results.
  */
@@ -27,19 +29,20 @@ function baseResponse(overrides = {}) {
         ...overrides,
     };
 }
-describe('formatSearchResults — compatibility-hidden notice (SMI-5178)', () => {
-    it('shows the hidden notice when compatibilityHidden > 0', () => {
-        const out = formatSearchResults(baseResponse({ compatibilityHidden: 3 }));
-        expect(out).toContain('3 more skill(s) hidden');
+describe('formatSearchResults — compatibility-deprioritized notice (SMI-5929)', () => {
+    it('shows the deprioritized notice when compatibilityDeprioritized > 0', () => {
+        const out = formatSearchResults(baseResponse({ compatibilityDeprioritized: 3 }));
+        expect(out).toContain('3 of the above result(s)');
+        expect(out).toContain('tagged for other tools');
         expect(out).toContain('compatible_with');
     });
-    it('omits the notice when compatibilityHidden is 0', () => {
-        const out = formatSearchResults(baseResponse({ compatibilityHidden: 0 }));
-        expect(out).not.toContain('hidden — tagged for other tools');
+    it('omits the notice when compatibilityDeprioritized is 0', () => {
+        const out = formatSearchResults(baseResponse({ compatibilityDeprioritized: 0 }));
+        expect(out).not.toContain('tagged for other tools');
     });
-    it('omits the notice when compatibilityHidden is absent', () => {
+    it('omits the notice when compatibilityDeprioritized is absent', () => {
         const out = formatSearchResults(baseResponse());
-        expect(out).not.toContain('hidden — tagged for other tools');
+        expect(out).not.toContain('tagged for other tools');
     });
 });
 describe('formatSearchResults — discovery-only hidden notice (SMI-5178)', () => {
@@ -49,8 +52,8 @@ describe('formatSearchResults — discovery-only hidden notice (SMI-5178)', () =
         // Must emit the literal escape-hatch token
         expect(out).toContain('installable_only: false');
     });
-    it('discovery-only notice is distinct from the compatibility notice in wording', () => {
-        const out = formatSearchResults(baseResponse({ discoveryOnlyHidden: 2, compatibilityHidden: 3 }));
+    it('discovery-only notice is distinct from the compatibility-deprioritized notice in wording', () => {
+        const out = formatSearchResults(baseResponse({ discoveryOnlyHidden: 2, compatibilityDeprioritized: 3 }));
         expect(out).toContain('discovery-only result(s) hidden');
         expect(out).toContain('tagged for other tools');
         // The two lines must be different

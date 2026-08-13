@@ -109,7 +109,40 @@ function createRecordingClient() {
         };
         return chain;
     }
-    return { client: { from: (table) => makeQuery(table) }, calls };
+    return {
+        client: {
+            from: (table) => makeQuery(table),
+            // SMI-5949 D-5: publish()'s read-back RPC. Derives the returned row from the most recent
+            // insert (whatever malformed team_id it carried) so the publish()-under-test matrix below
+            // completes without throwing, regardless of which team_id value is under test.
+            rpc: async (fn, _params) => {
+                if (fn !== 'get_private_registry_submissions')
+                    return { data: null, error: null };
+                const lastInsert = [...calls].reverse().find((c) => c.op === 'insert');
+                if (!lastInsert?.payload)
+                    return { data: [], error: null };
+                return {
+                    data: [
+                        {
+                            id: 'row-1',
+                            skill_id: lastInsert.payload.skill_id,
+                            version: lastInsert.payload.version,
+                            description: lastInsert.payload.description ?? null,
+                            approval_status: 'pending',
+                            approval_mode: 'review',
+                            published_by: 'user-fake',
+                            published_at: '2026-07-24T00:00:00Z',
+                            approved_by: null,
+                            approved_at: null,
+                            review_note: null,
+                        },
+                    ],
+                    error: null,
+                };
+            },
+        },
+        calls,
+    };
 }
 /**
  * Point BOTH client factories at the same recorder.

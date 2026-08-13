@@ -13,6 +13,18 @@
  *
  * null = community tool (no license required)
  * FeatureFlag = requires that feature to be enabled in license
+ *
+ * SMI-5949 D-11: private_registry_publish / private_registry_manage are
+ * deliberately kept mapped to 'private_registry' below, NOT the newer
+ * approval-gate flag. This map is tool-granular (one flag per tool) and
+ * private_registry_manage also serves list/get/deprecate/undeprecate/
+ * namespace/install, so remapping it would gate six unrelated actions
+ * behind the approval SKU. A live feature check against the new flag would
+ * also deny every already-issued Enterprise license, since license feature
+ * checks have no tier-default fallback and issued licenses' features array
+ * is frozen at generation time. Do not "fix" this by adding a row for the
+ * new flag below — see D-11 reasons 1-2 and the regression test in
+ * toolFeatureMapping.test.ts that guards this omission.
  */
 export const TOOL_FEATURES = {
     // Core tools - no feature required (null = community)
@@ -82,6 +94,8 @@ export const FEATURE_DISPLAY_NAMES = {
     // Additional features
     custom_integrations: 'Custom Integrations',
     advanced_analytics: 'Advanced Analytics',
+    // SMI-5949: separately-flagged approval gate for private_registry_publish (D-11)
+    registry_approval: 'Registry Approval Workflow',
 };
 /**
  * Tier information for upgrade messaging
@@ -108,5 +122,7 @@ export const FEATURE_TIERS = {
     // Additional features
     custom_integrations: 'enterprise',
     advanced_analytics: 'enterprise',
+    // SMI-5949: separately-flagged approval gate for private_registry_publish (D-11)
+    registry_approval: 'enterprise',
 };
 //# sourceMappingURL=toolFeatureMapping.js.map

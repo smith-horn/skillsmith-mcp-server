@@ -46,12 +46,18 @@ export interface UserClientBinding {
  */
 export declare function getAdminUserClient(operation: string): Promise<UserClientBinding>;
 /**
- * A user-bound client for MEMBER-level operations — today only `getContent()` (SMI-5905 Wave 3).
+ * A user-bound client for MEMBER-level operations — `getContent()` (SMI-5905 Wave 3) and
+ * `publish()` (SMI-5949 Wave 2 Step 2, D-7).
  *
- * `private_registry_skills_member_read` already grants any team member the row, so this is NOT an
- * admin gate and must not claim to be one. It exists because the read still has to run as a
- * *person*: the shared license key resolves a team, so a service-role read here would hand a
- * team's packaged content to anyone holding the key regardless of whether they are still a member.
+ * `private_registry_skills_member_read` / `_member_insert` already grant any team member the row
+ * / the insert, so this is NOT an admin gate and must not claim to be one — the error message
+ * below says so explicitly (plan-review finding H5), precisely because it would otherwise be easy
+ * to mistake for {@link getAdminUserClient}'s "only team admins" message, which is factually wrong
+ * for a member-level operation like publish. It exists because the operation still has to run as
+ * a *person*: the shared license key resolves a team, so a service-role call here would (for
+ * `getContent`) hand a team's packaged content to anyone holding the key regardless of whether
+ * they are still a member, and (for `publish`) leave `published_by` NULL — unrecoverable for D-6's
+ * self-approval check, which needs a real submitter to compare against.
  */
 export declare function getMemberUserClient(operation: string): Promise<UserClientBinding>;
 //# sourceMappingURL=registry-tools.live.auth.d.ts.map

@@ -16,108 +16,13 @@
  *
  * Tier gate: Enterprise (private_registry feature flag — toolFeatureMapping.ts).
  */
-import { z } from 'zod';
 import type { ToolContext } from '../context.js';
-import type { PrivateRegistryInstallSummary, RegistrySkillContent } from './registry-tools.content.types.js';
+import { type PrivateRegistryInstallSummary, type RegistrySkillContent } from './registry-tools.content.types.js';
+import type { RegistryReviewDecision, PrivateRegistryReviewService } from './registry-tools.review.types.js';
+import type { SkillContent } from './registry-tools.schemas.js';
 export { createStubRegistryService } from './registry-tools.stub.js';
-/**
- * Packaged skill files as a flat { relativePath: fileText } map
- * (e.g. { "SKILL.md": "...", "scripts/foo.sh": "..." }). Stored JSONB-native
- * per ADR-129; a "SKILL.md" entry is required and total size is capped at 2 MB
- * (enforced in the live publish service).
- */
-export declare const skillContentSchema: z.ZodRecord<z.ZodString, z.ZodString>;
-export type SkillContent = z.infer<typeof skillContentSchema>;
-export declare const privateRegistryPublishInputSchema: z.ZodObject<{
-    skillId: z.ZodEffects<z.ZodString, string, string>;
-    version: z.ZodString;
-    content: z.ZodRecord<z.ZodString, z.ZodString>;
-    description: z.ZodOptional<z.ZodString>;
-}, "strip", z.ZodTypeAny, {
-    version: string;
-    skillId: string;
-    content: Record<string, string>;
-    description?: string | undefined;
-}, {
-    version: string;
-    skillId: string;
-    content: Record<string, string>;
-    description?: string | undefined;
-}>;
-export type PrivateRegistryPublishInput = z.infer<typeof privateRegistryPublishInputSchema>;
-export declare const privateRegistryManageInputSchema: z.ZodObject<{
-    action: z.ZodEnum<["list", "get", "deprecate", "undeprecate", "namespace", "install"]>;
-    skillId: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
-    version: z.ZodOptional<z.ZodString>;
-    force: z.ZodOptional<z.ZodBoolean>;
-}, "strip", z.ZodTypeAny, {
-    action: "list" | "get" | "deprecate" | "undeprecate" | "install" | "namespace";
-    version?: string | undefined;
-    force?: boolean | undefined;
-    skillId?: string | undefined;
-}, {
-    action: "list" | "get" | "deprecate" | "undeprecate" | "install" | "namespace";
-    version?: string | undefined;
-    force?: boolean | undefined;
-    skillId?: string | undefined;
-}>;
-export type PrivateRegistryManageInput = z.infer<typeof privateRegistryManageInputSchema>;
-export declare const privateRegistryPublishToolSchema: {
-    name: "private_registry_publish";
-    description: string;
-    inputSchema: {
-        type: "object";
-        properties: {
-            skillId: {
-                type: string;
-                description: string;
-            };
-            version: {
-                type: string;
-                description: string;
-            };
-            content: {
-                type: string;
-                additionalProperties: {
-                    type: string;
-                };
-                description: string;
-            };
-            description: {
-                type: string;
-                description: string;
-            };
-        };
-        required: string[];
-    };
-};
-export declare const privateRegistryManageToolSchema: {
-    name: "private_registry_manage";
-    description: string;
-    inputSchema: {
-        type: "object";
-        properties: {
-            action: {
-                type: string;
-                enum: string[];
-                description: string;
-            };
-            skillId: {
-                type: string;
-                description: string;
-            };
-            version: {
-                type: string;
-                description: string;
-            };
-            force: {
-                type: string;
-                description: string;
-            };
-        };
-        required: string[];
-    };
-};
+export type { StubRegistryService, StubActor } from './registry-tools.stub.js';
+export { privateRegistryPublishToolSchema, privateRegistryManageToolSchema, skillContentSchema, privateRegistryPublishInputSchema, privateRegistryManageInputSchema, type SkillContent, type PrivateRegistryPublishInput, type PrivateRegistryManageInput, } from './registry-tools.schemas.js';
 export interface RegistrySkill {
     skillId: string;
     version: string;
@@ -125,7 +30,33 @@ export interface RegistrySkill {
     deprecated: boolean;
     publishedAt: string;
     publishedBy: string;
-    registryUrl: string;
+    /**
+     * `null` for a non-`'approved'` row (SMI-5949 adversarial-review finding L-2): a pending or
+     * rejected version is not actually live at any URL, so presenting one would contradict the
+     * intent already honored in `executePrivateRegistryPublishImpl`'s pending-branch message (which
+     * omits a Registry URL entirely). Only `registry-tools.live.submissions.ts`'s `mapSubmissionRow()`
+     * (the submissions/publish-read-back path, which can return non-approved rows) actually nulls
+     * this; `list()`/`get()` only ever return `'approved'` rows by construction (D-4), so this is
+     * always non-null there.
+     */
+    registryUrl: string | null;
+    /**
+     * SMI-5949 D-3. Every row has one (`NOT NULL` on the table). `list()`/`get()` only ever return
+     * `'approved'` rows (D-4's `.eq('approval_status','approved')` predicate) — the field is still
+     * populated from the real column rather than hardcoded, so it stays accurate if that predicate
+     * is ever loosened for an admin-facing view. A freshly-`publish()`-ed skill is `'pending'` until
+     * an admin reviews it. Never print this bare field name unqualified in a user-facing message —
+     * pair it with a noun phrase (e.g. "review status") so it is not confused with `approvalMode`.
+     */
+    approvalStatus: 'pending' | 'approved' | 'rejected';
+    /**
+     * SMI-5949 D-3. `'auto'` for rows grandfathered in before the approval gate existed;
+     * `'review'` for everything published after. Disambiguates an `approved` row with no approver:
+     * legitimate iff `approvalMode === 'auto'`. Never print this bare field name unqualified in a
+     * user-facing message — pair it with a noun phrase (e.g. "approval workflow") so it is not
+     * confused with `approvalStatus`.
+     */
+    approvalMode: 'review' | 'auto';
 }
 export interface PrivateRegistryPublishResult {
     success: boolean;
@@ -146,6 +77,11 @@ export interface PrivateRegistryManageResult {
     namespace?: string;
     /** Present for action:'install' (SMI-5905). An allowlist — never carries raw `content`. */
     install?: PrivateRegistryInstallSummary;
+    /** action:'submissions' (SMI-5949 D-5). Metadata only, never `content` (C1) — separate from
+     *  `skills` since this can include pending/rejected items. */
+    submissions?: RegistrySkill[];
+    /** action:'approve'/'reject' (SMI-5949 D-5). */
+    review?: RegistryReviewDecision;
     message?: string;
     error?: string;
 }
@@ -160,9 +96,15 @@ export interface PrivateRegistryManageResult {
  * @see packages/mcp-server/src/tools/registry-tools.live.ts
  * @see docs/internal/adr/129-private-skill-registry-real-implementation.md
  */
-export interface PrivateRegistryService {
+export interface PrivateRegistryService extends PrivateRegistryReviewService {
     publish(teamId: string, skillId: string, version: string, content: SkillContent, description?: string): Promise<RegistrySkill>;
-    list(teamId: string, version?: string): Promise<RegistrySkill[]>;
+    /**
+     * SMI-5949 Wave 3: `includeDeprecated` skips the `deprecated = FALSE` predicate this method
+     * carries by default, so an admin can still see what they deprecated. No equivalent flag on
+     * `get()` below — see `registry-tools.live.reads.ts`'s `getSkill()` for why that asymmetry is
+     * deliberate.
+     */
+    list(teamId: string, version?: string, includeDeprecated?: boolean): Promise<RegistrySkill[]>;
     get(teamId: string, skillId: string, version?: string): Promise<RegistrySkill | null>;
     /** SMI-5905: one version's packaged `content`, for install. `null` when nothing visible
      *  matches (absent OR cross-team — deliberately indistinguishable). Throws when the row's OWN
@@ -191,9 +133,12 @@ export declare const executePrivateRegistryPublish: (input: {
     description?: string | undefined;
 }, _context: ToolContext) => Promise<PrivateRegistryPublishResult>;
 export declare const executePrivateRegistryManage: (input: {
-    action: "list" | "get" | "deprecate" | "undeprecate" | "install" | "namespace";
+    action: "list" | "get" | "deprecate" | "undeprecate" | "approve" | "reject" | "submissions" | "install" | "namespace";
+    status?: "rejected" | "approved" | "pending" | undefined;
     version?: string | undefined;
     force?: boolean | undefined;
     skillId?: string | undefined;
+    note?: string | undefined;
+    includeDeprecated?: boolean | undefined;
 }, context: ToolContext) => Promise<PrivateRegistryManageResult>;
 //# sourceMappingURL=registry-tools.d.ts.map

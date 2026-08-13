@@ -5,79 +5,7 @@
 import { type CompatibilityFilter, type MCPSearchResponse as SearchResponse } from '@skillsmith/core';
 import type { ToolContext } from '../context.js';
 export { formatSearchResults } from './search.formatter.js';
-/**
- * Search tool schema for MCP
- */
-export declare const searchToolSchema: {
-    name: string;
-    description: string;
-    inputSchema: {
-        type: "object";
-        properties: {
-            query: {
-                type: string;
-                description: string;
-            };
-            category: {
-                type: string;
-                description: string;
-                enum: string[];
-            };
-            trust_tier: {
-                type: string;
-                description: string;
-                enum: string[];
-            };
-            min_score: {
-                type: string;
-                description: string;
-                minimum: number;
-                maximum: number;
-            };
-            safe_only: {
-                type: string;
-                description: string;
-            };
-            installable_only: {
-                type: string;
-                description: string;
-            };
-            max_risk: {
-                type: string;
-                description: string;
-                minimum: number;
-                maximum: number;
-            };
-            compatible_with: {
-                type: string;
-                description: string;
-                properties: {
-                    ides: {
-                        type: string;
-                        items: {
-                            type: string;
-                        };
-                        description: string;
-                    };
-                    llms: {
-                        type: string;
-                        items: {
-                            type: string;
-                        };
-                        description: string;
-                    };
-                };
-            };
-            limit: {
-                type: string;
-                description: string;
-                minimum: number;
-                maximum: number;
-            };
-        };
-        required: never[];
-    };
-};
+export { searchToolSchema } from './search.schema.js';
 /**
  * Input parameters for the search operation
  * @interface SearchInput
@@ -100,9 +28,9 @@ export interface SearchInput {
     /** SMI-2760: Filter by IDE/LLM compatibility */
     compatible_with?: CompatibilityFilter;
     /**
-     * SMI-5896: Maximum results to return. Defaults to
-     * {@link DEFAULT_SEARCH_LIMIT} (10) when omitted; clamped (not rejected)
-     * to [{@link MIN_SEARCH_LIMIT}, {@link MAX_SEARCH_LIMIT}] otherwise.
+     * SMI-5896: Maximum results to return. Defaults to `DEFAULT_SEARCH_LIMIT`
+     * (10, see search.helpers.ts) when omitted; clamped (not rejected) to
+     * [`MIN_SEARCH_LIMIT`, `MAX_SEARCH_LIMIT`] otherwise.
      */
     limit?: number;
 }

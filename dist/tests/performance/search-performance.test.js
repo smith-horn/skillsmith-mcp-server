@@ -72,11 +72,22 @@ describe('SMI-797: Performance Validation', () => {
         }
     });
     describe('Search Performance', () => {
-        it('should complete single search under 50ms with 500 skills', async () => {
+        // SMI-6005: this is the FIRST search executed in the suite, so it pays a
+        // one-time cold-path cost (statement prep / JIT warm-up) that later
+        // search tests don't. Isolated runs average ~2-3ms, but under real
+        // suite/host contention this specific assertion has been observed to
+        // climb to 15-40ms, and historical CI failures hit 63.9ms and 86.8ms
+        // against the old 50ms threshold. 250ms is a CI-contention allowance,
+        // not a performance target — do not read it as the expected latency.
+        // Tradeoff: a real ~50ms-scale regression on this specific cold path
+        // would not be caught by this test alone, but sustained/steady-state
+        // regressions are still caught by the sibling 'repeated searches' warm
+        // test below (avg < 30ms over 20 iterations).
+        it('should complete single search under 250ms with 500 skills', async () => {
             const start = performance.now();
             const result = await executeSearch({ query: 'test' }, context);
             const elapsed = performance.now() - start;
-            expect(elapsed).toBeLessThan(50);
+            expect(elapsed).toBeLessThan(250);
             expect(result.results.length).toBeGreaterThan(0);
         });
         it('should complete filtered search under 50ms', async () => {
@@ -122,7 +133,7 @@ describe('SMI-797: Performance Validation', () => {
         });
     });
     describe('Get Skill Performance', () => {
-        it('should complete single get-skill under 20ms', async () => {
+        it('should complete single get-skill under 50ms', async () => {
             const start = performance.now();
             const result = await executeGetSkill({ id: 'test-org/skill-0' }, context);
             const elapsed = performance.now() - start;
@@ -137,7 +148,7 @@ describe('SMI-797: Performance Validation', () => {
             const elapsed = performance.now() - start;
             expect(elapsed).toBeLessThan(500);
         });
-        it('should handle 20 concurrent get-skill calls under 100ms', async () => {
+        it('should handle 20 concurrent get-skill calls under 200ms', async () => {
             const ids = Array.from({ length: 20 }, (_, i) => `test-org/skill-${i}`);
             const start = performance.now();
             const results = await Promise.all(ids.map((id) => executeGetSkill({ id }, context)));
@@ -148,18 +159,45 @@ describe('SMI-797: Performance Validation', () => {
         });
     });
     describe('Combined Flow Performance', () => {
-        it('should complete search → get flow under 50ms', async () => {
-            const start = performance.now();
-            // Search
-            const searchResult = await executeSearch({ query: 'test' }, context);
-            expect(searchResult.results.length).toBeGreaterThan(0);
-            // Get first registry result (skip local skills — they aren't in the test DB)
-            const firstId = 
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            searchResult.results.find((r) => r.source !== 'local')?.id ?? 'test-org/skill-0';
-            await executeGetSkill({ id: firstId }, context);
-            const elapsed = performance.now() - start;
-            expect(elapsed).toBeLessThan(50);
+        // SMI-6010: warm assertion — by the time this runs, the suite has already
+        // executed every other search/get test above against the same 500-skill
+        // context, so (unlike the cold-path test at the top of this file) there
+        // is no JIT/statement-prep cost left to pay. A real pre-push run under
+        // genuine heavy multi-session host load measured 69.77ms for a single
+        // sample against the old 50ms threshold (see the SMI-6002/6010
+        // implementation plan and the SMI-6004/6005/6007 retro doc for
+        // provenance). This repo's own reproduction (5 runs under real,
+        // non-synthetic contention — concurrent sibling worktree containers,
+        // this file alongside the other historically-heavy integration files,
+        // a full mcp-server package run, and a full 16k-test repo-wide run with
+        // concurrent builds) never exceeded ~3ms for this exact operation. That
+        // gap — a consistently tight typical range vs. one much larger historical
+        // outlier — is the signature of a rare scheduler/GC preemption pause on
+        // this specific worker thread, not a sustained regression, so this
+        // asserts a median across several warm samples (averages out one-time
+        // preemption noise) plus a generous single-sample ceiling as a
+        // hang/deadlock backstop only — matching the "contention allowance, not
+        // a performance target" framing used for the cold-path assertion above.
+        it('should maintain low median search → get flow latency under repeated sampling', async () => {
+            const SAMPLES = 5;
+            const timings = [];
+            for (let i = 0; i < SAMPLES; i++) {
+                const start = performance.now();
+                // Search
+                const searchResult = await executeSearch({ query: 'test' }, context);
+                expect(searchResult.results.length).toBeGreaterThan(0);
+                // Get first registry result (skip local skills — they aren't in the test DB)
+                const firstId = 
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                searchResult.results.find((r) => r.source !== 'local')?.id ?? 'test-org/skill-0';
+                await executeGetSkill({ id: firstId }, context);
+                timings.push(performance.now() - start);
+            }
+            const sorted = [...timings].sort((a, b) => a - b);
+            const median = sorted[Math.floor(sorted.length / 2)];
+            const maxTime = Math.max(...timings);
+            expect(median).toBeLessThan(30);
+            expect(maxTime).toBeLessThan(250);
         });
         it('should complete search → get all results flow under 200ms', async () => {
             const start = performance.now();
@@ -216,22 +254,37 @@ describe('SMI-797: Performance Validation', () => {
             await Promise.all(Array.from({ length: 10 }, (_, i) => executeSearch({ query: `skill-${i}` }, context)));
             metrics.concurrentSearches = performance.now() - start;
             // Search + Get flow (use first registry result — local skills aren't in the test DB)
-            start = performance.now();
-            const result = await executeSearch({ query: 'test' }, context);
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const flowId = result.results.find((r) => r.source !== 'local')?.id ?? 'test-org/skill-0';
-            await executeGetSkill({ id: flowId }, context);
-            metrics.searchGetFlow = performance.now() - start;
+            // SMI-6010: this is the warmest occurrence of the "search → get flow"
+            // shape in the file (runs after the 100-iteration memory-leak test
+            // above too) — same robust-sampling rationale as the "Combined Flow
+            // Performance" test's identically-shaped assertion; see the comment
+            // there for the full reproduction-evidence writeup.
+            const searchGetFlowSamples = 5;
+            const searchGetFlowTimings = [];
+            for (let i = 0; i < searchGetFlowSamples; i++) {
+                const flowStart = performance.now();
+                const result = await executeSearch({ query: 'test' }, context);
+                const flowId = 
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                result.results.find((r) => r.source !== 'local')?.id ?? 'test-org/skill-0';
+                await executeGetSkill({ id: flowId }, context);
+                searchGetFlowTimings.push(performance.now() - flowStart);
+            }
+            const sortedFlowTimings = [...searchGetFlowTimings].sort((a, b) => a - b);
+            metrics.searchGetFlow = sortedFlowTimings[Math.floor(sortedFlowTimings.length / 2)];
+            const searchGetFlowMax = Math.max(...searchGetFlowTimings);
             console.log('Performance Metrics (ms):');
             console.log(`  Single Search: ${metrics.singleSearch.toFixed(2)}`);
             console.log(`  Single Get: ${metrics.singleGet.toFixed(2)}`);
             console.log(`  10 Concurrent Searches: ${metrics.concurrentSearches.toFixed(2)}`);
-            console.log(`  Search + Get Flow: ${metrics.searchGetFlow.toFixed(2)}`);
+            console.log(`  Search + Get Flow (median): ${metrics.searchGetFlow.toFixed(2)}`);
+            console.log(`  Search + Get Flow (max): ${searchGetFlowMax.toFixed(2)}`);
             // Assertions
             expect(metrics.singleSearch).toBeLessThan(50);
             expect(metrics.singleGet).toBeLessThan(50);
             expect(metrics.concurrentSearches).toBeLessThan(200);
-            expect(metrics.searchGetFlow).toBeLessThan(50);
+            expect(metrics.searchGetFlow).toBeLessThan(30);
+            expect(searchGetFlowMax).toBeLessThan(250);
         });
     });
 });

@@ -18,6 +18,13 @@
  * it is asserted structurally — exact key sets on both the result and its `install` payload, plus
  * a scan of the serialized result for the published file bytes — rather than by grep alone
  * (Sol plan-review finding #10).
+ *
+ * @see SMI-5949 adversarial-review finding H-1 (extended here, same regression class): every
+ * round-trip fixture below now APPROVES a publish before asserting a successful install. This file
+ * was not named in H-1's original file list, but carried the identical gap — `getContent()`'s
+ * missing `approvalStatus === 'approved'` filter meant every test here installed a still-`pending`
+ * skill successfully. Fixing `registry-tools.stub.ts` alone (H-1's actual fix) turned that latent
+ * gap into a real regression in THIS file; fixed in the same pass, not deferred.
  */
 export {};
 //# sourceMappingURL=registry-tools.install-action.test.d.ts.map

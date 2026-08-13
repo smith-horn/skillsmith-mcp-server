@@ -58,4 +58,4 @@
  * half of the SMI-5456 fix, not the emission half.
  */
 export {};
-//# sourceMappingURL=agent-harness-sim.test.d.ts.map
+//# sourceMappingURL=agent-harness-sim.integration.test.d.ts.map

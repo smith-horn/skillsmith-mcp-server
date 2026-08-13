@@ -25,7 +25,17 @@ import type { SkillContent } from './registry-tools.js';
  * byte of content before the Enterprise check passes.
  */
 export declare const REGISTRY_TABLE = "private_registry_skills";
-export declare const REGISTRY_METADATA_COLUMNS = "id, team_id, skill_id, version, description, content_hash, deprecated, published_by, published_at";
+export declare const REGISTRY_METADATA_COLUMNS = "id, team_id, skill_id, version, description, content_hash, deprecated, published_by, published_at, approval_status, approval_mode";
+/**
+ * Shared, non-leaking "not found" message for `private_registry_manage`'s `get` and `install`
+ * actions — kept byte-identical across both call sites (SMI-5949 Wave 2 Step 3, plan-review
+ * finding M11) so a cross-team lookup, a genuinely absent skill, and a skill with only a
+ * `pending`/`rejected` version (now invisible under D-4's RLS) are all indistinguishable. The
+ * appended hint is deliberately generic and always shown — it must never confirm or deny that an
+ * unapproved version exists, which would turn the message into an existence oracle for exactly
+ * the state this feature exists to keep private.
+ */
+export declare function registrySkillNotFoundMessage(skillId: string): string;
 /**
  * One private-registry skill version's packaged content, plus the metadata needed to install it.
  *
@@ -51,7 +61,12 @@ export interface RegistrySkillContent {
     content: SkillContent;
     /** sha256 of `SKILL.md` as stored. A digest, not content. */
     contentHash: string | null;
-    /** Deprecation hides a skill from `list`/search; it stays installable. */
+    /**
+     * Always `false` on any row this type is actually constructed from — `getSkillContent()`
+     * excludes deprecated versions entirely (SMI-5949 Wave 3), with no opt-in. Kept as a real field
+     * (not dropped) because it is echoed straight through from the row for display, same as
+     * `RegistrySkill.deprecated`.
+     */
     deprecated: boolean;
     publishedAt: string;
 }

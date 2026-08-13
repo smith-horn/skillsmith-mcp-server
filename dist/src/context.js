@@ -22,7 +22,7 @@ import { existsSync } from 'fs';
 import { createDatabase, openDatabase, SearchService, SkillRepository, validateDbPath, SkillsmithApiClient, initializePostHog, shutdownPostHog, generateAnonymousId, SyncConfigRepository, SyncHistoryRepository, SyncEngine, SkillVersionRepository, CoInstallRepository, SkillDependencyRepository, BackgroundSyncService, getApiKey, } from '@skillsmith/core';
 import { LLMFailoverChain } from './llm/failover.js';
 import { getDefaultDbPath, ensureDbDirectory } from './context.helpers.js';
-export { getDefaultDbPath, ensureDbDirectory } from './context.helpers.js';
+export { getDefaultDbPath, ensureDbDirectory, buildDbInitializedLogMessage, } from './context.helpers.js';
 export { createToolContextAsync, getToolContextAsync, resetAsyncToolContext, } from './context.async.js';
 /**
  * Create the shared tool context with database and services

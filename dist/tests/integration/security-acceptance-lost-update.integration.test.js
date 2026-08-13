@@ -146,4 +146,4 @@ describe('security-acceptance lost update under a forced stale reclaim (§9 H-9)
         // waitForAsync's own cap above for the same full-suite-contention reason.
     }, 300_000);
 });
-//# sourceMappingURL=security-acceptance-lost-update.test.js.map
+//# sourceMappingURL=security-acceptance-lost-update.integration.test.js.map

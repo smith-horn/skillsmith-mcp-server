@@ -4,6 +4,50 @@ All notable changes to `@skillsmith/mcp-server` are documented here.
 
 ## [Unreleased]
 
+## v0.7.8
+
+- **Fix**: correct integration-test CI job classification (#2345)
+- **Fix**: Switch search-get-flow assertions to robust sampling (#2341)
+- **Fix**: Raise agent-harness-sim connect timeout, harden cleanup (#2340)
+- **Fix**: Raise cold-path search-performance threshold to 250ms (#2329)
+- **Feature**: `install_skill` gains an optional `cwd` input field — an absolute path to the calling client's actual project/workspace root, threaded through to `@skillsmith/core`'s new `SkillInstallationService` `companionBaseDir` constructor param. Needed because this MCP server is long-running: its own `process.cwd()` is fixed at server launch and generally does not track the calling editor/agent's real project, which previously meant a project-scoped companion-agent output (Antigravity's `directory-package` mode) could resolve against the wrong directory. Harmless for every other client, whose companion-agent `dir` is absolute already (SMI-5982)
+- **Fix**: `install_skill`'s `client`/`alsoLink` params — both the zod schema (`install.types.ts`) and the raw tool `enum` (`install.tool.ts`) hardcoded a stale 5-value literal (`claude-code | cursor | copilot | windsurf | agents`) that predated `opencode`/`hermes` (SMI-5456) and `grok` (SMI-5697). Because a hand-written `z.enum([...])`/JSON-schema `enum` isn't derived from the `ClientId` type, TypeScript never caught the drift — `install_skill` was silently rejecting `client: "opencode"`/`"hermes"`/`"grok"` over MCP even though the CLI fully supported all three. Both now derive from `CLIENT_IDS`, closing this class of drift permanently instead of re-appending a 4th literal (SMI-5982)
+- **Feature**: `search`'s compatibility resolution and the MCP-config setup snippets now cover `antigravity` as a real client, alongside the `@skillsmith/core` `ClientId` addition (SMI-5982)
+- **Fix (BLOCKING, PR-review follow-up)**: `install_skill`'s `cwd` field validated nothing beyond "is a string" — its own description says "Absolute path to...", but a relative path or the empty string was silently accepted and would have reached `@skillsmith/core`'s `resolveCompanionAgentPath()` unvalidated. The zod schema now rejects an empty string (`'cwd must not be empty'`) and a non-absolute path (`'cwd must be an absolute path'`) with clear messages, while staying optional. Separately, `private_registry_manage(action:"install")`'s `defaultInstaller()` has no per-call cwd/workspace input at all (existing, deliberate design — see its own doc comment) and so never passed `companionBaseDir`; `@skillsmith/core`'s companion `resolveCompanionAgentPath()` fix (same PR) now makes this fail closed automatically for `directory-package`-mode clients (Antigravity) — a graceful `{success:false, error}` naming the requirement, never a thrown exception and never a silent write to this server process's own `process.cwd()`. Deliberately NOT adding a workspace-allowlist/containment system beyond schema-level absolute-path validation for `cwd` — no such concept exists anywhere else in this codebase's install pipeline, and the residual risk (a caller-chosen absolute prefix, always suffixed with the already-validated-safe `.agents/agents/<skillName>/agent.md`, containing only scanner-passed generated content) is the same trust model the CLI's own unvalidated `process.cwd()` has always used for this exact file (SMI-5982)
+- **Changed (breaking)**: `search`'s compatibility filter is now a ranking signal, not a hard
+  exclusion — a result whose declared `compatibility` doesn't include the requested client is no
+  longer dropped, only sorted after declared-compatible and unscoped (`[]`/absent) results. Local
+  results still sort ahead of API/registry results (unchanged); compat-rank only reorders within
+  each bucket. Response field `compatibilityHidden` renamed to `compatibilityDeprioritized` —
+  precisely the count of other-tool-only results present on the returned page, not a corpus-wide or
+  pre-page count. `search`'s API-backed path now also forwards the wanted compatibility slugs to the
+  registry API (previously never sent), so ranking can happen server-side, before the page is cut to
+  `limit` — a client-side re-sort after the API had already paginated could never promote a
+  compatible row back onto the page, which was the actual bug (SMI-5929)
+- **Fix**: the startup stderr log printed either an unexpanded `~/.skillsmith/skills.db` literal
+  or the raw, unvalidated `SKILLSMITH_DB_PATH` env value — neither reflected the actual path
+  `getToolContextAsync()` resolved and validated. Now logs the new
+  `buildDbInitializedLogMessage()` (`context.helpers.ts`), which calls `getDefaultDbPath()`
+  internally, so the logged path and the real DB path can never disagree (SMI-5981)
+- **Fix**: `skill_recommend`'s `project_context` keyword extraction (`tools/recommend.ts`) no longer
+  silently drops real short technical terms ("git", "ci", "aws", "sql", "k8s") via a bare
+  `.filter((w) => w.length > 3)` threshold — a context consisting only of such terms previously
+  derived an empty stack and tripped the SMI-5896 empty-stack guard even though usable context had
+  been supplied. Now uses the shared `extractContextWords()` (`@skillsmith/core`) also adopted by
+  the CLI's `recommend --context`, so the two can't independently drift on this again (SMI-5986)
+- **Feature**: `private_registry_publish` now requires a genuine two-party review before a version
+  becomes installable — a submission lands `pending` and is invisible on every read surface
+  (`list`/`get`/`install`) until a different team admin/owner approves it via three new
+  `private_registry_manage` actions (`submissions`, `approve`, `reject`); self-approval is refused.
+  `publish` now runs on the signed-in user's own credentials (`skillsmith login`, in addition to
+  `SKILLSMITH_LICENSE_KEY`) rather than the shared license key alone, so a submission can actually
+  name who submitted it (SMI-5949 Wave 2)
+- **Fix**: a deprecated private-registry skill is now genuinely excluded from `list`/`get`/`install`
+  and the content-read path — previously `deprecated` was documented and messaged as hiding a
+  skill, but no read path actually enforced it. `list` gains an `includeDeprecated` opt-in so a
+  team admin can still see what they deprecated; `get`/`install` have no equivalent opt-in (SMI-5949
+  Wave 2)
+
 ## v0.7.7
 
 - **Cadence**: Mechanical cadence alignment (no changes since v0.7.6).

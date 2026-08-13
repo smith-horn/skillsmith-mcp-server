@@ -24,6 +24,7 @@
 import { SkillInstallationService } from '@skillsmith/core';
 import { getInstallPath, resolveClientId } from '@skillsmith/core/install';
 import { getToolContext } from '../context.js';
+import { registrySkillNotFoundMessage, } from './registry-tools.content.types.js';
 /** Derive the on-disk skill directory name from an `author/name` skillId. */
 function skillNameFromSkillId(skillId) {
     const parts = skillId.split('/');
@@ -66,13 +67,16 @@ export async function executeRegistryInstall(params) {
     }
     const fetched = await service.getContent(teamId, input.skillId, input.version);
     if (!fetched) {
-        // Byte-identical to the `get` action's not-found message. A cross-team skillId lands here too
-        // (RLS + the tenant filter simply return no rows), so this must not distinguish "does not
-        // exist" from "not your team" — it would otherwise be an existence oracle for another team.
+        // Byte-identical to the `get` action's not-found message (registrySkillNotFoundMessage,
+        // registry-tools.content.types.ts). A cross-team skillId lands here too (RLS + the tenant
+        // filter simply return no rows), and so does a skillId whose only version is pending/rejected
+        // (SMI-5949 D-4 — RLS-invisible until approved) — this must not distinguish any of those from
+        // "does not exist", or it would be an existence oracle for another team's skill or for a
+        // not-yet-approved version (plan-review finding M11).
         return {
             success: false,
             dataSource,
-            error: `Skill "${input.skillId}" not found in private registry.`,
+            error: registrySkillNotFoundMessage(input.skillId),
         };
     }
     const context = params.context ?? getToolContext();

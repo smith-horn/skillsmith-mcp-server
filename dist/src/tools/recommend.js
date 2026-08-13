@@ -7,7 +7,7 @@
  * @see SMI-1837: Include local skills in recommendations (parallel search)
  * @see SMI-2741: Split to meet 500-line standard
  */
-import { SkillMatcher, OverlapDetector, trackEvent, buildEmptyStackGuidance, } from '@skillsmith/core';
+import { SkillMatcher, OverlapDetector, trackEvent, buildEmptyStackGuidance, extractContextWords, } from '@skillsmith/core';
 import { withTelemetry } from '@skillsmith/core/telemetry';
 import { getInstalledSkills } from '../utils/installed-skills.js';
 // Import types
@@ -69,13 +69,10 @@ async function executeRecommendImpl(input, context) {
     // Build search query from installed skill names and project context keywords
     const stack = [...installed_skills.map((id) => id.split('/').pop() || id)];
     if (project_context) {
-        // Extract key terms from project context (simple word split)
-        const contextWords = project_context
-            .toLowerCase()
-            .split(/\s+/)
-            .filter((w) => w.length > 3)
-            .slice(0, 5);
-        stack.push(...contextWords);
+        // SMI-5986: shared helper keeps real short technical terms (git, ci,
+        // aws, sql, k8s) that a bare `.filter((w) => w.length > 3)` threshold
+        // used to silently drop, while still filtering out noise.
+        stack.push(...extractContextWords(project_context));
     }
     // SMI-5896: an empty derived stack (no installed_skills and no usable
     // project_context) is a legitimate under-detection, not an invalid request

@@ -8,6 +8,11 @@
  */
 /**
  * MCP tool definition for install_skill
+ *
+ * SMI-5982 (Wave 6) audit finding: `client`/`alsoLink` `enum` below used to
+ * be a hand-duplicated 5-value literal, independently stale from the zod
+ * schema's own copy in install.types.ts (both predated opencode/hermes/grok)
+ * — now both derive from the same `CLIENT_IDS` source of truth.
  */
 export declare const installTool: {
     name: string;
@@ -42,18 +47,22 @@ export declare const installTool: {
             };
             client: {
                 type: string;
-                enum: string[];
+                enum: import("@skillsmith/core/install").ClientId[];
                 description: string;
             };
             alsoLink: {
                 type: string;
                 items: {
                     type: string;
-                    enum: string[];
+                    enum: import("@skillsmith/core/install").ClientId[];
                 };
                 description: string;
             };
             symlink: {
+                type: string;
+                description: string;
+            };
+            cwd: {
                 type: string;
                 description: string;
             };

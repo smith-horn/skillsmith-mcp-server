@@ -17,12 +17,24 @@
  *
  * @see packages/enterprise/src/license/FeatureFlags.ts for canonical definition
  */
-export type FeatureFlag = 'basic_analytics' | 'email_support' | 'version_tracking' | 'private_skills' | 'team_workspaces' | 'usage_analytics' | 'priority_support' | 'skill_security_audit' | 'sso_saml' | 'rbac' | 'audit_logging' | 'siem_export' | 'compliance_reports' | 'private_registry' | 'custom_integrations' | 'advanced_analytics';
+export type FeatureFlag = 'basic_analytics' | 'email_support' | 'version_tracking' | 'private_skills' | 'team_workspaces' | 'usage_analytics' | 'priority_support' | 'skill_security_audit' | 'sso_saml' | 'rbac' | 'audit_logging' | 'siem_export' | 'compliance_reports' | 'private_registry' | 'custom_integrations' | 'advanced_analytics' | 'registry_approval';
 /**
  * Mapping of tool names to their required feature flags
  *
  * null = community tool (no license required)
  * FeatureFlag = requires that feature to be enabled in license
+ *
+ * SMI-5949 D-11: private_registry_publish / private_registry_manage are
+ * deliberately kept mapped to 'private_registry' below, NOT the newer
+ * approval-gate flag. This map is tool-granular (one flag per tool) and
+ * private_registry_manage also serves list/get/deprecate/undeprecate/
+ * namespace/install, so remapping it would gate six unrelated actions
+ * behind the approval SKU. A live feature check against the new flag would
+ * also deny every already-issued Enterprise license, since license feature
+ * checks have no tier-default fallback and issued licenses' features array
+ * is frozen at generation time. Do not "fix" this by adding a row for the
+ * new flag below — see D-11 reasons 1-2 and the regression test in
+ * toolFeatureMapping.test.ts that guards this omission.
  */
 export declare const TOOL_FEATURES: Record<string, FeatureFlag | null>;
 /**

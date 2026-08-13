@@ -25,6 +25,17 @@
  * MCP transport's own already-proven real round trip (`executeRegistryInstall`), against the SAME
  * underlying published data, to prove the two transports never disagree about which version "no
  * version specified" resolves to, or about what actually lands on disk.
+ *
+ * @see SMI-5949 adversarial-review finding H-1: every fixture below now APPROVES a publish before
+ * asserting a successful install — before this fix, every test in this file published a skill and
+ * installed it while it was still `pending`, which meant this file was asserting "a pending,
+ * unapproved private-registry version installs successfully" as a PASSING invariant, the exact
+ * inverse of what the approval gate exists to enforce. A dedicated negative test below now also
+ * asserts the opposite: publish, do NOT approve, and confirm install fails on BOTH transports.
+ * `registry-tools.review-parity.test.ts` was split out of this file at the same time (the
+ * `approve()` helper this fix needed pushed the file over the 500-line audit:standards budget) —
+ * it covers a different concern (stub/live REVIEW-GATE ERROR parity, M7) and is unrelated to the
+ * install-round-trip parity this file still owns.
  */
 export {};
 //# sourceMappingURL=registry-tools.cross-transport.test.d.ts.map

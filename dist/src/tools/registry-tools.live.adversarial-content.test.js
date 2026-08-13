@@ -54,7 +54,15 @@ vi.mock('../supabase-client.js', () => ({
     isSupabaseConfigured: vi.fn(() => true),
     getSupabaseClient: vi.fn(),
     getSupabaseAdminClient: vi.fn(),
+    // SMI-5949 Wave 2 Step 2: publish() now runs on the signed-in user's client (D-7), not
+    // service-role — every publish() call in this file needs a user client mocked too.
+    getSupabaseUserClient: vi.fn(),
     resetSupabaseClients: vi.fn(),
+}));
+vi.mock('./team-resolver.js', () => ({
+    readLicenseKey: vi.fn(() => 'sk_test_fake_license'),
+    resolveLicenseTeamId: vi.fn(async () => 'team-alpha'),
+    resolveUserAccessToken: vi.fn(async () => 'fake-user-access-token'),
 }));
 const TEAM_ID = 'team-alpha';
 function publishedRow(overrides = {}) {
@@ -94,11 +102,45 @@ function createRecordingClient() {
         };
         return chain;
     }
-    return { client: { from: (table) => makeQuery(table) }, calls };
+    return {
+        client: {
+            from: (table) => makeQuery(table),
+            // SMI-5949 D-5: publish()'s read-back RPC. Derives the returned row from the most recent
+            // insert so any publish() call in this file gets a submission row matching what it
+            // inserted, without every test having to script its own fixture.
+            rpc: async (fn, _params) => {
+                if (fn !== 'get_private_registry_submissions')
+                    return { data: null, error: null };
+                const lastInsert = [...calls].reverse().find((c) => c.op === 'insert');
+                if (!lastInsert?.payload)
+                    return { data: [], error: null };
+                return {
+                    data: [
+                        {
+                            id: 'row-1',
+                            skill_id: lastInsert.payload.skill_id,
+                            version: lastInsert.payload.version,
+                            description: lastInsert.payload.description ?? null,
+                            approval_status: 'pending',
+                            approval_mode: 'review',
+                            published_by: 'user-fake',
+                            published_at: '2026-07-24T00:00:00Z',
+                            approved_by: null,
+                            approved_at: null,
+                            review_note: null,
+                        },
+                    ],
+                    error: null,
+                };
+            },
+        },
+        calls,
+    };
 }
 async function mockClient(client) {
-    const { getSupabaseAdminClient } = await import('../supabase-client.js');
+    const { getSupabaseAdminClient, getSupabaseUserClient } = await import('../supabase-client.js');
     vi.mocked(getSupabaseAdminClient).mockResolvedValue(client);
+    vi.mocked(getSupabaseUserClient).mockResolvedValue(client);
 }
 describe('createLiveRegistryService().publish() — adversarial content payloads — SMI-5882 Wave 2 Step 3', () => {
     // ==========================================================================

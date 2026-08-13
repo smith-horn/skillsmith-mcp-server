@@ -5,6 +5,7 @@
 import { z } from 'zod';
 import type { ScanReport, ScannerOptions } from '@skillsmith/core';
 import type { TrustTier } from '@skillsmith/core';
+import { type ClientId } from '@skillsmith/core/install';
 /**
  * SMI-1533: Valid trust tier values
  * SMI-1809: Added 'local' for local skills
@@ -85,21 +86,30 @@ export declare const installInputSchema: z.ZodObject<{
     /** SMI-3863: Confirm install of experimental/unknown tier skills */
     confirmed: z.ZodDefault<z.ZodBoolean>;
     /** SMI-4578: target client (defaults to SKILLSMITH_CLIENT env or claude-code) */
-    client: z.ZodOptional<z.ZodEnum<["claude-code", "cursor", "copilot", "windsurf", "agents"]>>;
+    client: z.ZodOptional<z.ZodEnum<[ClientId, ...ClientId[]]>>;
     /** SMI-4578: additional clients to fan-out into via copy (or symlink with --symlink) */
-    alsoLink: z.ZodDefault<z.ZodArray<z.ZodEnum<["claude-code", "cursor", "copilot", "windsurf", "agents"]>, "many">>;
+    alsoLink: z.ZodDefault<z.ZodArray<z.ZodEnum<[ClientId, ...ClientId[]]>, "many">>;
     /** SMI-4578: use symlinks instead of copies for alsoLink targets */
     symlink: z.ZodDefault<z.ZodBoolean>;
+    /**
+     * SMI-5982 code-review fix #1: this MCP server is long-running, so its own
+     * `process.cwd()` is fixed at server launch and generally does NOT track
+     * the calling editor/agent's actual project — passing this explicitly is
+     * the only reliable way to place a project-scoped companion-agent output
+     * (currently only Antigravity's directory-package mode) correctly.
+     */
+    cwd: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
 }, "strip", z.ZodTypeAny, {
     force: boolean;
     skillId: string;
     confirmed: boolean;
     skipScan: boolean;
     skipOptimize: boolean;
-    alsoLink: ("claude-code" | "cursor" | "windsurf" | "agents" | "copilot")[];
+    alsoLink: ClientId[];
     symlink: boolean;
     conflictAction?: "overwrite" | "merge" | "cancel" | undefined;
-    client?: "claude-code" | "cursor" | "windsurf" | "agents" | "copilot" | undefined;
+    client?: ClientId | undefined;
+    cwd?: string | undefined;
 }, {
     skillId: string;
     force?: boolean | undefined;
@@ -107,9 +117,10 @@ export declare const installInputSchema: z.ZodObject<{
     skipScan?: boolean | undefined;
     skipOptimize?: boolean | undefined;
     conflictAction?: "overwrite" | "merge" | "cancel" | undefined;
-    client?: "claude-code" | "cursor" | "windsurf" | "agents" | "copilot" | undefined;
-    alsoLink?: ("claude-code" | "cursor" | "windsurf" | "agents" | "copilot")[] | undefined;
+    client?: ClientId | undefined;
+    alsoLink?: ClientId[] | undefined;
     symlink?: boolean | undefined;
+    cwd?: string | undefined;
 }>;
 export type InstallInput = z.infer<typeof installInputSchema>;
 /** Output type for install tool */
