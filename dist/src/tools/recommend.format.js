@@ -7,6 +7,7 @@
  * - mergeAndDeduplicateRecommendations: Merge API and local results, removing duplicates
  * - formatRecommendations: Format recommendation response for terminal display
  */
+import { getRecommendAutoDetectedFooterText } from '@skillsmith/core';
 import { getTrustBadge } from '../utils/validation.js';
 /**
  * Merge and deduplicate API and local skill recommendations.
@@ -124,7 +125,7 @@ export function formatRecommendations(response) {
         lines.push(`Role filter: ${response.context.role_filter}`);
     }
     if (response.context.auto_detected) {
-        lines.push(`Installed skills: ${response.context.installed_count} (auto-detected from ~/.claude/skills/)`);
+        lines.push(`Installed skills: ${response.context.installed_count} (${getRecommendAutoDetectedFooterText()})`);
     }
     else {
         lines.push(`Installed skills: ${response.context.installed_count}`);
