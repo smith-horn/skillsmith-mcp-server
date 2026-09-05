@@ -99,6 +99,21 @@ export declare const installInputSchema: z.ZodObject<{
      * (currently only Antigravity's directory-package mode) correctly.
      */
     cwd: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
+    /**
+     * ADR-139 (SMI-6274 Wave 4) / GPT-5.6-Sol PR review: explicit install
+     * scope, mirroring the CLI's `--scope` flag (rank 1 of ADR-139 point 2's
+     * precedence chain). This MCP server is long-running (see `cwd` above) —
+     * `SKILLSMITH_SCOPE` (rank 2, read automatically by `resolveScopedSkillsDir`
+     * when this is omitted) applies uniformly to EVERY tool call for the
+     * server's entire process lifetime, so it cannot express "install THIS
+     * skill workspace-scoped, THAT one globally" within one long-lived MCP
+     * session the way a per-invocation CLI env var naturally can. A structured
+     * per-call parameter closes that gap and gives MCP callers the same
+     * per-call precision as the CLI flag, while `SKILLSMITH_SCOPE` remains a
+     * valid fallback for MCP client configs that can only set env vars at
+     * server-launch time.
+     */
+    scope: z.ZodOptional<z.ZodEnum<["global", "workspace"]>>;
 }, "strip", z.ZodTypeAny, {
     force: boolean;
     skillId: string;
@@ -107,20 +122,22 @@ export declare const installInputSchema: z.ZodObject<{
     skipOptimize: boolean;
     alsoLink: ClientId[];
     symlink: boolean;
-    conflictAction?: "overwrite" | "merge" | "cancel" | undefined;
     client?: ClientId | undefined;
+    conflictAction?: "overwrite" | "merge" | "cancel" | undefined;
     cwd?: string | undefined;
+    scope?: "global" | "workspace" | undefined;
 }, {
     skillId: string;
+    client?: ClientId | undefined;
     force?: boolean | undefined;
     confirmed?: boolean | undefined;
     skipScan?: boolean | undefined;
     skipOptimize?: boolean | undefined;
     conflictAction?: "overwrite" | "merge" | "cancel" | undefined;
-    client?: ClientId | undefined;
     alsoLink?: ClientId[] | undefined;
     symlink?: boolean | undefined;
     cwd?: string | undefined;
+    scope?: "global" | "workspace" | undefined;
 }>;
 export type InstallInput = z.infer<typeof installInputSchema>;
 /** Output type for install tool */
@@ -210,6 +227,34 @@ export interface SkillManifestEntry {
     pinnedVersion?: string;
     /** SMI-skill-version-tracking Wave 1: How updates are handled (Wave 2: enforcement) */
     updatePolicy?: 'auto' | 'manual' | 'never';
+    /**
+     * SMI-5894 (Wave 1 Step 3): which client this installation targets.
+     * Absent on manifest entries written before multi-client re-keying —
+     * treat a missing value as the canonical client (`claude-code`), matching
+     * `manifestKeyFor()`'s own default. Mirrors the equivalent field on core's
+     * own `SkillManifestEntry` (`skill-installation.types.ts`) — this
+     * mcp-server-local copy predates that one and was never widened to match
+     * until SMI-6343 Wave 3 needed it for the path-unresolved identity signal.
+     */
+    client?: ClientId;
+    /**
+     * ADR-145 §1: who asserts this entry's identity, independent of `source`
+     * — `'registry'` (Skillsmith resolved + installed it) or `'local'` (the
+     * user positively asserted this is their own / not registry-tracked).
+     * Absent = legacy, no assertion ever recorded (NEVER defaults to
+     * `'registry'`). Mirrors core's own `SkillManifestEntry`
+     * (`skill-installation.types.ts`) — widened here, same pattern as
+     * `client` above, because `apply_manifest_reconcile` (SMI-6343 Wave 4)
+     * is the first mcp-server-local reader/writer of this field.
+     */
+    provenance?: 'local' | 'registry';
+    /**
+     * ADR-145 §3 / ADR-144 §6: ISO-8601 UTC timestamp of the last successful
+     * re-verification of this entry's on-disk content hash against the
+     * registry's content hash for the claimed `id`. Written only by
+     * `apply_manifest_reconcile`'s `verify` action, only on a hash match.
+     */
+    verifiedAt?: string;
 }
 export interface SkillManifest {
     version: string;
@@ -231,5 +276,11 @@ export interface RegistrySkillInfo {
     quarantined?: boolean;
     /** SHA-256 hash of SKILL.md at index time for tamper detection */
     contentHash?: string;
+    /**
+     * SMI-6343 Wave 3: the registry's recorded author for this skill id, used
+     * by the shared identity-classification module's front-matter-contradiction
+     * signal. `null`/absent when the registry has no author on record.
+     */
+    author?: string | null;
 }
 //# sourceMappingURL=install.types.d.ts.map

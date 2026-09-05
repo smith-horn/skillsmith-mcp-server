@@ -91,6 +91,7 @@ describe('sso-tools', () => {
         action: 'set',
         idpMetadataUrl: 'https://idp.example.com/metadata',
         protocol: 'saml',
+        domain: 'example.com',
       }
       const result = await executeConfigureSso(input, mockContext)
       expect(result.success).toBe(true)
@@ -107,6 +108,7 @@ describe('sso-tools', () => {
         idpMetadataUrl: 'https://idp.example.com/metadata',
         idpEntityId: 'https://custom-entity.example.com',
         protocol: 'saml',
+        domain: 'example.com',
       }
       const result = await executeConfigureSso(input, mockContext)
       expect(result.success).toBe(true)
@@ -127,6 +129,7 @@ describe('sso-tools', () => {
           action: 'set',
           idpMetadataUrl: 'https://idp.example.com/metadata',
           protocol: 'saml',
+          domain: 'example.com',
         },
         mockContext
       )
@@ -152,6 +155,7 @@ describe('sso-tools', () => {
           action: 'set',
           idpMetadataUrl: 'https://idp.example.com/metadata',
           protocol: 'saml',
+          domain: 'example.com',
         },
         mockContext
       )
@@ -188,6 +192,7 @@ describe('sso-tools', () => {
           action: 'set',
           idpMetadataUrl: 'https://idp.example.com/metadata',
           protocol: 'saml',
+          domain: 'example.com',
         },
         mockContext
       )
@@ -205,6 +210,7 @@ describe('sso-tools', () => {
           action: 'set',
           idpMetadataUrl: 'https://idp.example.com/metadata',
           protocol: 'oidc',
+          domain: 'example.com',
         },
         mockContext
       )
@@ -212,6 +218,119 @@ describe('sso-tools', () => {
       const result = await executeSsoSettings({ includeMetadata: true }, mockContext)
       expect(result.configured).toBe(true)
       expect(result.config!.idpMetadataUrl).toBe('https://idp.example.com/metadata')
+    })
+  })
+
+  // ==========================================================================
+  // SMI-6184: dataSource must reflect the actual service, not Supabase config,
+  // and the simulated connection test must be clearly marked as such.
+  // ==========================================================================
+
+  describe('SMI-6184: dataSource and simulated-test labeling', () => {
+    it('reports dataSource "stub" for configure_sso and sso_settings even when Supabase env vars are set', async () => {
+      const prevUrl = process.env.SUPABASE_URL
+      const prevKey = process.env.SUPABASE_ANON_KEY
+      process.env.SUPABASE_URL = 'https://example.supabase.co'
+      process.env.SUPABASE_ANON_KEY = 'anon-key'
+      try {
+        const configureResult = await executeConfigureSso(
+          {
+            action: 'set',
+            idpMetadataUrl: 'https://idp.example.com/metadata',
+            protocol: 'saml',
+            domain: 'example.com',
+          },
+          mockContext
+        )
+        const settingsResult = await executeSsoSettings({ includeMetadata: false }, mockContext)
+        expect(configureResult.dataSource).toBe('stub')
+        expect(settingsResult.dataSource).toBe('stub')
+      } finally {
+        if (prevUrl === undefined) delete process.env.SUPABASE_URL
+        else process.env.SUPABASE_URL = prevUrl
+        if (prevKey === undefined) delete process.env.SUPABASE_ANON_KEY
+        else process.env.SUPABASE_ANON_KEY = prevKey
+      }
+    })
+
+    it('marks a successful test-connection result as simulated', async () => {
+      await executeConfigureSso(
+        {
+          action: 'set',
+          idpMetadataUrl: 'https://idp.example.com/metadata',
+          protocol: 'saml',
+          domain: 'example.com',
+        },
+        mockContext
+      )
+      const result = await executeConfigureSso({ action: 'test', protocol: 'saml' }, mockContext)
+      expect(result.test?.simulated).toBe(true)
+      expect(result.test?.message).toMatch(/simulated/i)
+    })
+
+    it('marks a no-config test-connection result as simulated too', async () => {
+      const result = await executeConfigureSso({ action: 'test', protocol: 'saml' }, mockContext)
+      expect(result.success).toBe(false)
+      expect(result.test?.simulated).toBe(true)
+    })
+  })
+
+  // ==========================================================================
+  // SMI-6204 (Wave 3): claim_domain / verify_domain, stub mode
+  // ==========================================================================
+
+  describe('configure_sso action "claim_domain"', () => {
+    it('should fail without a domain', async () => {
+      const result = await executeConfigureSso(
+        { action: 'claim_domain', protocol: 'saml' },
+        mockContext
+      )
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('domain is required')
+    })
+
+    it('should issue a simulated DNS TXT verification token', async () => {
+      const result = await executeConfigureSso(
+        { action: 'claim_domain', domain: 'example.com', protocol: 'saml' },
+        mockContext
+      )
+      expect(result.success).toBe(true)
+      expect(result.dataSource).toBe('stub')
+      expect(result.domainClaim).toBeDefined()
+      expect(result.domainClaim!.domain).toBe('example.com')
+      expect(result.domainClaim!.recordName).toBe('_skillsmith-verify.example.com')
+      expect(result.domainClaim!.recordType).toBe('TXT')
+      expect(result.domainClaim!.recordValue).toBeTruthy()
+      expect(result.domainClaim!.simulated).toBe(true)
+      expect(result.message).toContain('DNS TXT record')
+      expect(result.message).toContain('_skillsmith-verify.example.com')
+      expect(result.message).toMatch(/stub data/i)
+    })
+  })
+
+  describe('configure_sso action "verify_domain"', () => {
+    it('should fail without a domain', async () => {
+      const result = await executeConfigureSso(
+        { action: 'verify_domain', protocol: 'saml' },
+        mockContext
+      )
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('domain is required')
+    })
+
+    it('should always simulate a successful verification', async () => {
+      const result = await executeConfigureSso(
+        { action: 'verify_domain', domain: 'example.com', protocol: 'saml' },
+        mockContext
+      )
+      expect(result.success).toBe(true)
+      expect(result.dataSource).toBe('stub')
+      expect(result.domainVerification).toBeDefined()
+      expect(result.domainVerification!.domain).toBe('example.com')
+      expect(result.domainVerification!.verified).toBe(true)
+      expect(result.domainVerification!.simulated).toBe(true)
+      expect(result.message).toContain('is verified')
+      expect(result.message).toMatch(/stub/i)
     })
   })
 })

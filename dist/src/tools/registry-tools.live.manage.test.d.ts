@@ -11,10 +11,15 @@
  *     target another team — the service-layer half of cross-tenant isolation; the
  *     DB/RLS half is asserted in scripts/tests/private-registry-rls.test.ts);
  *   - SMI-5949 Wave 2 Step 3 (D-4 surfaces 3/4): list/get carry a mandatory
- *     approval_status='approved' in-query predicate, since service-role bypasses the RLS
- *     policy that would otherwise enforce it;
+ *     approval_status='approved' in-query predicate, since RLS does not enforce it either
+ *     (still true post-SMI-6109 — see the class doc comment below);
  *   - deprecate/undeprecate require a real representation (`.select()`) so a successful
- *     update is never misreported as not-found.
+ *     update is never misreported as not-found;
+ *   - SMI-6109: list/get/getNamespace moved off the service-role client onto the signed-in
+ *     user's own JWT (member-level, `getMemberUserClient()`) — every test below now mocks
+ *     `getSupabaseUserClient` via `mockBothClients()` (both credential getters point at one
+ *     recorder) rather than `getSupabaseAdminClient()` alone, and a new describe block covers
+ *     the not-logged-in path these three now share with `getContent`/`publish`.
  */
 export {};
 //# sourceMappingURL=registry-tools.live.manage.test.d.ts.map

@@ -33,7 +33,7 @@
  * runtime on the very first tool call.
  */
 import { dispatchToolCall } from './tool-dispatch.js';
-import { resolveAgentMarker, runWithMarkerContext, runWithEmissionGate, } from '@skillsmith/core/telemetry';
+import { resolveAgentMarker, runWithMarkerContext, runWithEmissionGate, runWithToolNameContext, } from '@skillsmith/core/telemetry';
 import { resolveConsent, annotateResponseWithConsent, wasConsentPrompted, markConsentPrompted, } from './middleware/telemetry-consent.js';
 // SMI-5573/5582: one-shot first-run welcome message injection. Called
 // UNCONDITIONALLY on every dispatched response (see below) — the annotator
@@ -90,7 +90,12 @@ export async function handleCallToolRequest(request, deps) {
         // error-envelope path below. Process-cached: one round-trip on first
         // call for a given anonymousId, zero-cost after.
         const consent = await resolveConsent(toolContext.distinctId);
-        const result = await runWithEmissionGate(consent.enabled, () => runWithMarkerContext(resolveAgentMarker(requestMeta), () => dispatchToolCall(name, args, toolContext, licenseMiddleware, quotaMiddleware)));
+        const result = await runWithEmissionGate(consent.enabled, () => runWithMarkerContext(resolveAgentMarker(requestMeta), () => 
+        // SMI-6362 §1: `name` is the literal MCP tool name (e.g. 'search') —
+        // the one place it's known. Installed alongside the marker context so
+        // `withTelemetry`'s emit path (nested inside this continuation,
+        // including through `withLicenseAndQuota` middleware) can read it.
+        runWithToolNameContext(name, () => dispatchToolCall(name, args, toolContext, licenseMiddleware, quotaMiddleware))));
         // SMI-5573/5582: splice the pending first-run welcome message
         // (welcome_message + tier1_install_failures) FIRST, unconditionally.
         // annotateResponseWithWelcome is a cheap no-op when nothing is pending and,

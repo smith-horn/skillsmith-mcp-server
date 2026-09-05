@@ -2,9 +2,9 @@
  * @fileoverview Helpers for the local-inventory scanner (SMI-4587 Wave 1 Step 2).
  * @module @skillsmith/mcp-server/utils/local-inventory.helpers
  *
- * Pure functions extracted to keep `local-inventory.ts` thin. CLAUDE.md
- * regex extraction lives here so the regex behavior can be tested in
- * isolation. Frontmatter helpers wrap the existing `parseYamlFrontmatter`.
+ * Pure functions extracted to keep `local-inventory.ts` thin — CLAUDE.md
+ * regex extraction (testable in isolation) and the shared skill-directory
+ * scan walk both live here.
  */
 import type { InventoryEntry, ScanWarning } from './local-inventory.types.js';
 /**
@@ -18,6 +18,15 @@ export declare const WARNING_CODES: {
     readonly REGEX_EXTRACTION_SKIPPED: "namespace.inventory.regex_extraction_skipped";
     readonly UNMANAGED_SKILL_BOOTSTRAPPED: "namespace.inventory.unmanaged_skill_bootstrapped";
     readonly PARSE_FAILED: "namespace.inventory.parse_failed";
+    /** SMI-6228 Source 5 (plugin-skill scan): an enabled plugin id could not be
+     * resolved to a scannable `skills/` directory — malformed
+     * `<plugin>@<marketplace>` shape, missing cache directory, or the cache
+     * directory doesn't have exactly one version subdirectory. Always
+     * fail-soft: the plugin is skipped, not thrown. */
+    readonly PLUGIN_SCAN_SKIPPED: "namespace.inventory.plugin_scan_skipped";
+    /** SMI-6240 Source 6: `<projectDir>/.claude/skills` resolved (post-symlink)
+     * outside `projectDir` — same `isWithinRoot` guard as Source 5. */
+    readonly PROJECT_SKILLS_SCAN_SKIPPED: "namespace.inventory.project_skills_scan_skipped";
 };
 /** Maximum trigger phrases retained per entry — matches `OverlapDetector.MAX_TRIGGER_PHRASES_PER_SKILL`. */
 export declare const MAX_TRIGGER_PHRASES_PER_SKILL = 50;
@@ -69,10 +78,34 @@ export declare function hashClaudeMdLine(claudeMdPath: string, line: string): st
  */
 export declare function extractClaudeMdTriggers(claudeMdPath: string, warnings: ScanWarning[]): InventoryEntry[];
 /**
- * Resolve `~/.skillsmith/manifest.json` and return the parsed object, or
- * `null` if absent / unreadable. Scanner uses this to populate
- * `entry.meta.author` for installed skills.
+ * Parse `~/.claude/settings.json`'s `enabledPlugins` map and return the ids
+ * (`<plugin>@<marketplace>` shape) whose value is exactly `true` (SMI-6228
+ * Source 5). Anything else — `false`, missing, a non-boolean value, a
+ * missing `enabledPlugins` key, a missing/unreadable/malformed
+ * settings.json — yields `[]` (fail-soft; a malformed-JSON file
+ * additionally raises a `PARSE_FAILED` warning since that indicates a
+ * corrupt file, not a normal absent state).
+ *
+ * The exact-`true` check is load-bearing, not incidental: a disabled plugin
+ * (`false`) must NOT surface its skills as inventory entries, or a stale
+ * collision against a since-disabled plugin would resurface as a false
+ * positive.
+ *
+ * SECURITY-RELEVANT DUPLICATION (ADR-137): this function is the TS
+ * reference implementation for a native `.mjs` reimplementation at
+ * `scripts/lib/mcp-command-guard.plugin-scan.mjs` (SMI-6229) — not a shared
+ * import, because that file runs on a `SessionStart` hook path where this
+ * package's `dist/` may not exist. The `.mjs` twin decides which
+ * plugin-registered MCP servers `scripts/lib/mcp-command-guard.mjs`'s
+ * `findHostedScopeViolations` check evaluates for a hosted server that
+ * exposes write-capable database tools (`execute_sql`, `apply_migration`).
+ * A silent divergence between the two implementations is a security gap,
+ * not a cosmetic inconsistency: it would mean that guard scans a different
+ * plugin set than this scanner does. Enforced by
+ * `packages/mcp-server/tests/unit/plugin-scan-parity.test.ts`.
  */
+export declare function readEnabledPluginIds(settingsPath: string, warnings: ScanWarning[]): string[];
+/** Resolve `~/.skillsmith/manifest.json`, or `null` if absent/unreadable. */
 export declare function loadManifest(manifestPath: string): Record<string, unknown> | null;
 /**
  * Look up an `author` (and `tags`) for a given skill identifier in the
@@ -88,9 +121,20 @@ export declare function lookupAuthor(manifest: Record<string, unknown> | null, i
  * than throwing — mtime is informational for ordering, not load-bearing.
  */
 export declare function readMtime(filePath: string): number | undefined;
+export { joinPath, isSafePathComponent, isWithinRoot, } from './local-inventory.path-safety.helpers.js';
 /**
- * Resolve absolute path joining `dir + filename`. Centralized so future
- * portability work (E-ANTI-1 v2) can swap in a relative-to-home derivation.
+ * `parseYamlFrontmatter` returns `string | string[] | undefined` for
+ * description (depending on block-scalar syntax). Normalize to a single
+ * string for downstream consumers.
  */
-export declare function joinPath(dir: string, filename: string): string;
+export declare function coerceDescription(value: unknown): string | undefined;
+/**
+ * Core directory walk shared by every "one SKILL.md per subdirectory" scan
+ * source (`local-inventory.ts`'s Source 1/5/6 wrappers): one entry per
+ * subdirectory, from `SKILL.md` frontmatter when present, else the
+ * directory name (with a soft warning). Returns entries with
+ * `client`/`origin`/`pluginId` unset — callers tag their own. Moved here
+ * from `local-inventory.ts` to keep that file under the 500-line cap.
+ */
+export declare function scanSkillsDirEntries(skillsDir: string, manifest: Record<string, unknown> | null, warnings: ScanWarning[]): InventoryEntry[];
 //# sourceMappingURL=local-inventory.helpers.d.ts.map

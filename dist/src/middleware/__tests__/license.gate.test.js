@@ -14,21 +14,21 @@ import { runWithEmissionGate, withTelemetry, initializePostHog, shutdownPostHog,
 import { createProfileIncompleteResponse, withLicenseAndQuota, MCP_MONTHLY_QUOTA_EXCEEDED_CODE, } from '../license.gate.js';
 import { resolveConsent, annotateResponseWithConsent, TELEMETRY_PRIVACY_URL, _resetConsentCacheForTests, } from '../telemetry-consent.js';
 import { z } from 'zod';
-// Mocking style matches telemetry-consent.test.ts: vi.mock the Supabase
-// client module so `resolveConsent` (called inside `withLicenseAndQuota`) can
-// be driven to a deterministic `enabled` value per test.
-vi.mock('../../supabase-client.js', () => ({
-    getSupabaseClient: vi.fn(),
-}));
-import { getSupabaseClient } from '../../supabase-client.js';
-const mockGetClient = vi.mocked(getSupabaseClient);
-/** Builds a mock Supabase client whose consent-row query resolves as given. */
-function createConsentQueryMock(resolvedValue) {
-    const maybeSingle = vi.fn().mockResolvedValue(resolvedValue);
-    const eq = vi.fn().mockReturnValue({ maybeSingle });
-    const select = vi.fn().mockReturnValue({ eq });
-    const from = vi.fn().mockReturnValue({ select });
-    return { from };
+/**
+ * SMI-6362 §3/B-6: `resolveConsent` (called inside `withLicenseAndQuota`) now
+ * POSTs to the `telemetry-consent` edge function instead of querying
+ * Supabase directly. Stubs global `fetch` so consent resolution in the T2
+ * block below returns a deterministic, decided state instead of making a
+ * real network call — mirrors `telemetry-consent-gate.test.ts`'s
+ * `jsonResponse` helper.
+ */
+const fetchMock = vi.fn();
+function mockConsentFetch(enabled, consentRequired) {
+    fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { enabled, consentRequired } }),
+    });
 }
 const mockLicense = {
     checkFeature: vi.fn().mockResolvedValue({ valid: true }),
@@ -127,15 +127,18 @@ describe('license.gate', () => {
 describe('T2 — double-gate reconciliation with runWithEmissionGate (SMI-5479)', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        fetchMock.mockReset();
+        vi.stubGlobal('fetch', fetchMock);
         _resetConsentCacheForTests();
         initializePostHog({ apiKey: 'phc_test_key_smi_5479' });
     });
     afterEach(async () => {
         await shutdownPostHog();
+        vi.unstubAllGlobals();
         _resetConsentCacheForTests();
     });
     it('gated tool emits exactly ONE event inside an outer dispatch-level scope — the inner middleware scope shadows, no double emit', async () => {
-        mockGetClient.mockResolvedValue(createConsentQueryMock({ data: { enabled: true }, error: null }));
+        mockConsentFetch(true, false);
         const captureSpy = vi.spyOn(getPostHog(), 'capture').mockImplementation(() => undefined);
         const ctx = { distinctId: 'user-t2-single-emit' };
         // Mirrors real gated-tool wiring (e.g. `executeSkillAudit` in
@@ -157,7 +160,7 @@ describe('T2 — double-gate reconciliation with runWithEmissionGate (SMI-5479)'
         expect(captured.properties.success).toBe(true);
     });
     it('a sibling direct call in the same outer scope still emits after the gated call completes (no destructive clear)', async () => {
-        mockGetClient.mockResolvedValue(createConsentQueryMock({ data: { enabled: true }, error: null }));
+        mockConsentFetch(true, false);
         const captureSpy = vi.spyOn(getPostHog(), 'capture').mockImplementation(() => undefined);
         const ctx = { distinctId: 'user-t2-sibling' };
         const gatedHandler = withTelemetry(async () => ({ data: [] }), {
@@ -201,7 +204,7 @@ describe('T2 — double-gate reconciliation with runWithEmissionGate (SMI-5479)'
         expect(body).not.toHaveProperty('privacy_url');
     });
     it('a gated success annotated by both the middleware and a simulated dispatch-level pass yields exactly ONE consent_required/privacy_url pair', async () => {
-        mockGetClient.mockResolvedValue(createConsentQueryMock({ data: null, error: null }));
+        mockConsentFetch(false, true);
         const ctx = { distinctId: 'user-t2-idempotent' };
         const handler = vi.fn().mockResolvedValue({ data: [{ id: 'skill/foo' }] });
         const middlewareResult = await withLicenseAndQuota('search', { query: 'x' }, inputSchema, handler, ctx, mockLicense, mockQuota);

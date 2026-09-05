@@ -8,6 +8,7 @@
  * Provides in-memory stub implementations for webhook and API key management.
  */
 import { randomBytes } from 'node:crypto';
+import { markAsStub } from './stub-data-source.js';
 // ============================================================================
 // Mock data generation helpers
 // ============================================================================
@@ -57,7 +58,7 @@ export function createStubIntegrationService() {
             status: key.revoked ? 'revoked' : 'active',
         };
     }
-    return {
+    return markAsStub({
         async createWebhook(url, events, description) {
             const id = `wh_${nextId++}`;
             const wh = {
@@ -126,6 +127,6 @@ export function createStubIntegrationService() {
             key.revoked = true;
             return true;
         },
-    };
+    });
 }
 //# sourceMappingURL=integration-tools.stub.js.map

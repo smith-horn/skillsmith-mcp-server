@@ -11,10 +11,15 @@
  *     target another team — the service-layer half of cross-tenant isolation; the
  *     DB/RLS half is asserted in scripts/tests/private-registry-rls.test.ts);
  *   - SMI-5949 Wave 2 Step 3 (D-4 surfaces 3/4): list/get carry a mandatory
- *     approval_status='approved' in-query predicate, since service-role bypasses the RLS
- *     policy that would otherwise enforce it;
+ *     approval_status='approved' in-query predicate, since RLS does not enforce it either
+ *     (still true post-SMI-6109 — see the class doc comment below);
  *   - deprecate/undeprecate require a real representation (`.select()`) so a successful
- *     update is never misreported as not-found.
+ *     update is never misreported as not-found;
+ *   - SMI-6109: list/get/getNamespace moved off the service-role client onto the signed-in
+ *     user's own JWT (member-level, `getMemberUserClient()`) — every test below now mocks
+ *     `getSupabaseUserClient` via `mockBothClients()` (both credential getters point at one
+ *     recorder) rather than `getSupabaseAdminClient()` alone, and a new describe block covers
+ *     the not-logged-in path these three now share with `getContent`/`publish`.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { executePrivateRegistryManage, setPrivateRegistryService, createStubRegistryService, } from './registry-tools.js';
@@ -50,21 +55,27 @@ describe('private_registry_manage namespace action — SMI-5852 AC-11', () => {
         const { client } = createFakeClient({
             singleResponder: () => ({ data: { skill_namespace: 'myteam' }, error: null }),
         });
-        const { getSupabaseAdminClient } = await import('../supabase-client.js');
-        vi.mocked(getSupabaseAdminClient).mockResolvedValue(client);
+        await mockBothClients(client);
         const result = await executePrivateRegistryManage({ action: 'namespace' }, makeContext());
         expect(result.success).toBe(true);
         expect(result.namespace).toBe('myteam');
     });
-    it('surfaces a typed error when the namespace cannot be resolved', async () => {
-        const { client } = createFakeClient({
-            singleResponder: () => ({ data: null, error: { message: 'not found' } }),
+    it('surfaces a typed error when the namespace cannot be resolved, and audits a genuine query error as error (not success)', async () => {
+        const { client, calls } = createFakeClient({
+            // No `code` field, so this is NOT PGRST116 (genuine no-rows) — a real query failure
+            // (e.g. connection error, RLS denial surfaced as an error), not "no namespace configured".
+            singleResponder: () => ({ data: null, error: { message: 'connection failure' } }),
         });
-        const { getSupabaseAdminClient } = await import('../supabase-client.js');
-        vi.mocked(getSupabaseAdminClient).mockResolvedValue(client);
+        await mockBothClients(client);
         const result = await executePrivateRegistryManage({ action: 'namespace' }, makeContext());
         expect(result.success).toBe(false);
         expect(result.error).toMatch(/unable to resolve/i);
+        // Cross-provider review finding (SMI-6109): the original draft collapsed this into `null` and
+        // audited it as 'success' — a real outage reported as a successful read, in a log whose whole
+        // purpose is security observability.
+        const auditInsert = calls.find((c) => c.table === 'audit_logs');
+        expect(auditInsert).toBeDefined();
+        expect(auditInsert.payload?.result).toBe('error');
     });
 });
 // ============================================================================
@@ -73,8 +84,7 @@ describe('private_registry_manage namespace action — SMI-5852 AC-11', () => {
 describe('private_registry_manage live mode — team scoping — SMI-5816', () => {
     it('list filters by the resolved team_id AND approval_status=approved (SMI-5949 D-4 surface 3)', async () => {
         const { client, calls } = createFakeClient({ thenResponder: () => ({ data: [], error: null }) });
-        const { getSupabaseAdminClient } = await import('../supabase-client.js');
-        vi.mocked(getSupabaseAdminClient).mockResolvedValue(client);
+        await mockBothClients(client);
         const result = await executePrivateRegistryManage({ action: 'list' }, makeContext());
         expect(result.success).toBe(true);
         expect(result.dataSource).toBe('live');
@@ -86,8 +96,7 @@ describe('private_registry_manage live mode — team scoping — SMI-5816', () =
         const { client, calls } = createFakeClient({
             singleResponder: () => ({ data: publishedRow(), error: null }),
         });
-        const { getSupabaseAdminClient } = await import('../supabase-client.js');
-        vi.mocked(getSupabaseAdminClient).mockResolvedValue(client);
+        await mockBothClients(client);
         const result = await executePrivateRegistryManage({ action: 'get', skillId: 'myteam/skill-a', version: '1.0.0' }, makeContext());
         expect(result.success).toBe(true);
         const q = calls.find((c) => c.table === 'private_registry_skills');
@@ -101,8 +110,7 @@ describe('private_registry_manage live mode — team scoping — SMI-5816', () =
         const { client, calls } = createFakeClient({
             thenResponder: () => ({ data: [publishedRow()], error: null }),
         });
-        const { getSupabaseAdminClient } = await import('../supabase-client.js');
-        vi.mocked(getSupabaseAdminClient).mockResolvedValue(client);
+        await mockBothClients(client);
         const result = await executePrivateRegistryManage({ action: 'get', skillId: 'myteam/skill-a' }, makeContext());
         expect(result.success).toBe(true);
         const q = calls.find((c) => c.table === 'private_registry_skills');
@@ -152,8 +160,7 @@ describe('private_registry_manage live mode — team scoping — SMI-5816', () =
                 error: { code: '08006', message: 'connection failure' },
             }),
         });
-        const { getSupabaseAdminClient } = await import('../supabase-client.js');
-        vi.mocked(getSupabaseAdminClient).mockResolvedValue(client);
+        await mockBothClients(client);
         const result = await executePrivateRegistryManage({ action: 'get', skillId: 'myteam/skill-a', version: '1.0.0' }, makeContext());
         // A connectivity/permission failure must surface as an error, not silently
         // read as "skill not found" — the two are operationally very different.
@@ -166,8 +173,7 @@ describe('private_registry_manage live mode — team scoping — SMI-5816', () =
     // ==========================================================================
     it('list filters by deprecated=false by default (SMI-5949 Wave 3)', async () => {
         const { client, calls } = createFakeClient({ thenResponder: () => ({ data: [], error: null }) });
-        const { getSupabaseAdminClient } = await import('../supabase-client.js');
-        vi.mocked(getSupabaseAdminClient).mockResolvedValue(client);
+        await mockBothClients(client);
         const result = await executePrivateRegistryManage({ action: 'list' }, makeContext());
         expect(result.success).toBe(true);
         const q = calls.find((c) => c.table === 'private_registry_skills');
@@ -175,8 +181,7 @@ describe('private_registry_manage live mode — team scoping — SMI-5816', () =
     });
     it('list with includeDeprecated:true skips the deprecated predicate (SMI-5949 Wave 3)', async () => {
         const { client, calls } = createFakeClient({ thenResponder: () => ({ data: [], error: null }) });
-        const { getSupabaseAdminClient } = await import('../supabase-client.js');
-        vi.mocked(getSupabaseAdminClient).mockResolvedValue(client);
+        await mockBothClients(client);
         const result = await executePrivateRegistryManage({ action: 'list', includeDeprecated: true }, makeContext());
         expect(result.success).toBe(true);
         const q = calls.find((c) => c.table === 'private_registry_skills');
@@ -184,8 +189,7 @@ describe('private_registry_manage live mode — team scoping — SMI-5816', () =
     });
     it('list with includeDeprecated:false still filters deprecated=false (explicit false is the same as omitted)', async () => {
         const { client, calls } = createFakeClient({ thenResponder: () => ({ data: [], error: null }) });
-        const { getSupabaseAdminClient } = await import('../supabase-client.js');
-        vi.mocked(getSupabaseAdminClient).mockResolvedValue(client);
+        await mockBothClients(client);
         const result = await executePrivateRegistryManage({ action: 'list', includeDeprecated: false }, makeContext());
         expect(result.success).toBe(true);
         const q = calls.find((c) => c.table === 'private_registry_skills');
@@ -195,8 +199,7 @@ describe('private_registry_manage live mode — team scoping — SMI-5816', () =
         const { client, calls } = createFakeClient({
             singleResponder: () => ({ data: publishedRow(), error: null }),
         });
-        const { getSupabaseAdminClient } = await import('../supabase-client.js');
-        vi.mocked(getSupabaseAdminClient).mockResolvedValue(client);
+        await mockBothClients(client);
         // `get` has no `includeDeprecated` field at all — passing extra input is not possible through
         // the typed handler, so this asserts the predicate is present unconditionally.
         const result = await executePrivateRegistryManage({ action: 'get', skillId: 'myteam/skill-a', version: '1.0.0' }, makeContext());
@@ -208,15 +211,14 @@ describe('private_registry_manage live mode — team scoping — SMI-5816', () =
         const { client, calls } = createFakeClient({
             thenResponder: () => ({ data: [publishedRow()], error: null }),
         });
-        const { getSupabaseAdminClient } = await import('../supabase-client.js');
-        vi.mocked(getSupabaseAdminClient).mockResolvedValue(client);
+        await mockBothClients(client);
         const result = await executePrivateRegistryManage({ action: 'get', skillId: 'myteam/skill-a' }, makeContext());
         expect(result.success).toBe(true);
         const q = calls.find((c) => c.table === 'private_registry_skills');
         expect(q.filters.some((f) => f.column === 'deprecated' && f.value === false)).toBe(true);
     });
-    it('get returns null (not-found) for PostgREST’s genuine no-rows code', async () => {
-        const { client } = createFakeClient({
+    it('get returns null (not-found) for PostgREST’s genuine no-rows code, and audits it as not_found (not success)', async () => {
+        const { client, calls } = createFakeClient({
             singleResponder: () => ({
                 data: null,
                 error: {
@@ -225,11 +227,63 @@ describe('private_registry_manage live mode — team scoping — SMI-5816', () =
                 },
             }),
         });
-        const { getSupabaseAdminClient } = await import('../supabase-client.js');
-        vi.mocked(getSupabaseAdminClient).mockResolvedValue(client);
+        await mockBothClients(client);
         const result = await executePrivateRegistryManage({ action: 'get', skillId: 'myteam/ghost', version: '1.0.0' }, makeContext());
+        // Cross-provider review finding (SMI-6109): a not-found get() was previously audited as
+        // 'success', which is misleading in a log whose purpose is security observability.
+        const auditInsert = calls.find((c) => c.table === 'audit_logs');
+        expect(auditInsert).toBeDefined();
+        expect(auditInsert.payload?.result).toBe('not_found');
         expect(result.success).toBe(false);
         expect(result.error).toMatch(/not found/i);
+    });
+});
+// ============================================================================
+// SMI-6109: list/get/getNamespace now require a signed-in user (member-level), not just a
+// license key — mirrors registry-tools.live.admin-auth.test.ts's pattern for the admin-gated
+// deprecate/undeprecate pair.
+// ============================================================================
+describe('private_registry_manage live mode — SMI-6109 member-credential requirement', () => {
+    it('list refuses — and issues no query — when no user is signed in', async () => {
+        const { resolveUserAccessToken } = await import('./team-resolver.js');
+        vi.mocked(resolveUserAccessToken).mockResolvedValueOnce(null);
+        const { client, calls } = createFakeClient();
+        await mockBothClients(client);
+        const result = await executePrivateRegistryManage({ action: 'list' }, makeContext());
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/skillsmith login/i);
+        // Any team member may list — this is not an admin-only error.
+        expect(result.error).not.toMatch(/only team admins/i);
+        expect(calls.find((c) => c.table === 'private_registry_skills')).toBeUndefined();
+    });
+    it('get refuses — and issues no query — when no user is signed in', async () => {
+        const { resolveUserAccessToken } = await import('./team-resolver.js');
+        vi.mocked(resolveUserAccessToken).mockResolvedValueOnce(null);
+        const { client, calls } = createFakeClient();
+        await mockBothClients(client);
+        const result = await executePrivateRegistryManage({ action: 'get', skillId: 'myteam/skill-a' }, makeContext());
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/skillsmith login/i);
+        expect(calls.find((c) => c.table === 'private_registry_skills')).toBeUndefined();
+    });
+    // getNamespace's documented contract (registry-tools.ts's PrivateRegistryService interface) is
+    // "or null if it could not be resolved" — it never throws, unlike list/get above, so a
+    // not-logged-in caller cannot get the same loud, distinguishable "run skillsmith login" error
+    // list/get surface. Cross-provider review (SMI-6109) flagged the resulting UX gap: the generic
+    // "unable to resolve" message the caller CAN get is now required to at least hint at login
+    // (registry-tools.ts's namespace handler), a partial fix that keeps getNamespace()'s own
+    // never-throws contract intact. See registry-tools.live.member-reads.ts's header comment for
+    // why that contract itself is deliberate.
+    it('namespace resolves to an "unable to resolve" message that hints at login, when no user is signed in', async () => {
+        const { resolveUserAccessToken } = await import('./team-resolver.js');
+        vi.mocked(resolveUserAccessToken).mockResolvedValueOnce(null);
+        const { client, calls } = createFakeClient();
+        await mockBothClients(client);
+        const result = await executePrivateRegistryManage({ action: 'namespace' }, makeContext());
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/unable to resolve/i);
+        expect(result.error).toMatch(/skillsmith login/i);
+        expect(calls.find((c) => c.table === 'teams')).toBeUndefined();
     });
 });
 //# sourceMappingURL=registry-tools.live.manage.test.js.map

@@ -2,14 +2,16 @@
  * @fileoverview Helpers for the local-inventory scanner (SMI-4587 Wave 1 Step 2).
  * @module @skillsmith/mcp-server/utils/local-inventory.helpers
  *
- * Pure functions extracted to keep `local-inventory.ts` thin. CLAUDE.md
- * regex extraction lives here so the regex behavior can be tested in
- * isolation. Frontmatter helpers wrap the existing `parseYamlFrontmatter`.
+ * Pure functions extracted to keep `local-inventory.ts` thin — CLAUDE.md
+ * regex extraction (testable in isolation) and the shared skill-directory
+ * scan walk both live here.
  */
 
 import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+
+import { CANONICAL_CLIENT } from '@skillsmith/core/install'
 
 import { parseYamlFrontmatter } from '../tools/validate.helpers.js'
 import type { InventoryEntry, ScanWarning } from './local-inventory.types.js'
@@ -25,6 +27,15 @@ export const WARNING_CODES = {
   REGEX_EXTRACTION_SKIPPED: 'namespace.inventory.regex_extraction_skipped',
   UNMANAGED_SKILL_BOOTSTRAPPED: 'namespace.inventory.unmanaged_skill_bootstrapped',
   PARSE_FAILED: 'namespace.inventory.parse_failed',
+  /** SMI-6228 Source 5 (plugin-skill scan): an enabled plugin id could not be
+   * resolved to a scannable `skills/` directory — malformed
+   * `<plugin>@<marketplace>` shape, missing cache directory, or the cache
+   * directory doesn't have exactly one version subdirectory. Always
+   * fail-soft: the plugin is skipped, not thrown. */
+  PLUGIN_SCAN_SKIPPED: 'namespace.inventory.plugin_scan_skipped',
+  /** SMI-6240 Source 6: `<projectDir>/.claude/skills` resolved (post-symlink)
+   * outside `projectDir` — same `isWithinRoot` guard as Source 5. */
+  PROJECT_SKILLS_SCAN_SKIPPED: 'namespace.inventory.project_skills_scan_skipped',
 } as const
 
 /** Maximum trigger phrases retained per entry — matches `OverlapDetector.MAX_TRIGGER_PHRASES_PER_SKILL`. */
@@ -228,15 +239,81 @@ function makeClaudeMdEntry(
     identifier: hashClaudeMdLine(claudeMdPath, phrase),
     triggerSurface: [phrase],
     mtime,
+    // CLAUDE.md rules are Claude Code-only (SMI-6077) — no other supported
+    // client reads this file today.
+    client: CANONICAL_CLIENT,
+    // Source 4 — a native-client entry, not a plugin-scan one (SMI-6228).
+    origin: 'native-client',
     meta: { description: phrase },
   }
 }
 
 /**
- * Resolve `~/.skillsmith/manifest.json` and return the parsed object, or
- * `null` if absent / unreadable. Scanner uses this to populate
- * `entry.meta.author` for installed skills.
+ * Parse `~/.claude/settings.json`'s `enabledPlugins` map and return the ids
+ * (`<plugin>@<marketplace>` shape) whose value is exactly `true` (SMI-6228
+ * Source 5). Anything else — `false`, missing, a non-boolean value, a
+ * missing `enabledPlugins` key, a missing/unreadable/malformed
+ * settings.json — yields `[]` (fail-soft; a malformed-JSON file
+ * additionally raises a `PARSE_FAILED` warning since that indicates a
+ * corrupt file, not a normal absent state).
+ *
+ * The exact-`true` check is load-bearing, not incidental: a disabled plugin
+ * (`false`) must NOT surface its skills as inventory entries, or a stale
+ * collision against a since-disabled plugin would resurface as a false
+ * positive.
+ *
+ * SECURITY-RELEVANT DUPLICATION (ADR-137): this function is the TS
+ * reference implementation for a native `.mjs` reimplementation at
+ * `scripts/lib/mcp-command-guard.plugin-scan.mjs` (SMI-6229) — not a shared
+ * import, because that file runs on a `SessionStart` hook path where this
+ * package's `dist/` may not exist. The `.mjs` twin decides which
+ * plugin-registered MCP servers `scripts/lib/mcp-command-guard.mjs`'s
+ * `findHostedScopeViolations` check evaluates for a hosted server that
+ * exposes write-capable database tools (`execute_sql`, `apply_migration`).
+ * A silent divergence between the two implementations is a security gap,
+ * not a cosmetic inconsistency: it would mean that guard scans a different
+ * plugin set than this scanner does. Enforced by
+ * `packages/mcp-server/tests/unit/plugin-scan-parity.test.ts`.
  */
+export function readEnabledPluginIds(settingsPath: string, warnings: ScanWarning[]): string[] {
+  if (!fs.existsSync(settingsPath)) return []
+
+  let raw: string
+  try {
+    raw = fs.readFileSync(settingsPath, 'utf-8')
+  } catch {
+    return []
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    warnings.push({
+      code: WARNING_CODES.PARSE_FAILED,
+      message: `${settingsPath} is not valid JSON; plugin-skill scan skipped`,
+      context: { path: settingsPath },
+    })
+    return []
+  }
+
+  // Cross-provider review finding (GPT-5.6-Sol, SMI-6229, Medium): `typeof`
+  // treats an array as `'object'` too, so `{"enabledPlugins":[true]}` used
+  // to pass this check and fall into `Object.entries([true])` — returning
+  // `["0"]` here while the `.mjs` twin's `isPlainObject` (which explicitly
+  // excludes arrays) correctly returned `[]` for the same input. Excluding
+  // arrays on both sides restores the parity guarantee this pair depends on.
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return []
+  const enabledPlugins = (parsed as Record<string, unknown>)['enabledPlugins']
+  if (!enabledPlugins || typeof enabledPlugins !== 'object' || Array.isArray(enabledPlugins))
+    return []
+
+  return Object.entries(enabledPlugins as Record<string, unknown>)
+    .filter(([, value]) => value === true)
+    .map(([id]) => id)
+}
+
+/** Resolve `~/.skillsmith/manifest.json`, or `null` if absent/unreadable. */
 export function loadManifest(manifestPath: string): Record<string, unknown> | null {
   try {
     if (!fs.existsSync(manifestPath)) return null
@@ -301,10 +378,101 @@ export function readMtime(filePath: string): number | undefined {
   }
 }
 
+// Path-traversal/symlink-escape guards moved to their own file (SMI-6229
+// follow-up) purely to keep this file under the 500-line cap — re-exported
+// here so `local-inventory.ts`'s existing import from this module still works.
+export {
+  joinPath,
+  isSafePathComponent,
+  isWithinRoot,
+} from './local-inventory.path-safety.helpers.js'
+
 /**
- * Resolve absolute path joining `dir + filename`. Centralized so future
- * portability work (E-ANTI-1 v2) can swap in a relative-to-home derivation.
+ * `parseYamlFrontmatter` returns `string | string[] | undefined` for
+ * description (depending on block-scalar syntax). Normalize to a single
+ * string for downstream consumers.
  */
-export function joinPath(dir: string, filename: string): string {
-  return path.join(dir, filename)
+export function coerceDescription(value: unknown): string | undefined {
+  if (typeof value === 'string') return value.trim() || undefined
+  if (Array.isArray(value)) {
+    const joined = value
+      .map((v) => (typeof v === 'string' ? v.trim() : ''))
+      .filter((v) => v.length > 0)
+      .join(' ')
+    return joined.length > 0 ? joined : undefined
+  }
+  return undefined
+}
+
+/**
+ * Core directory walk shared by every "one SKILL.md per subdirectory" scan
+ * source (`local-inventory.ts`'s Source 1/5/6 wrappers): one entry per
+ * subdirectory, from `SKILL.md` frontmatter when present, else the
+ * directory name (with a soft warning). Returns entries with
+ * `client`/`origin`/`pluginId` unset — callers tag their own. Moved here
+ * from `local-inventory.ts` to keep that file under the 500-line cap.
+ */
+export function scanSkillsDirEntries(
+  skillsDir: string,
+  manifest: Record<string, unknown> | null,
+  warnings: ScanWarning[]
+): InventoryEntry[] {
+  if (!fs.existsSync(skillsDir)) return []
+
+  const out: InventoryEntry[] = []
+  let dirEntries: fs.Dirent[]
+  try {
+    dirEntries = fs.readdirSync(skillsDir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+
+  for (const dirent of dirEntries) {
+    if (!dirent.isDirectory() || dirent.name.startsWith('.')) continue
+    const skillDir = path.join(skillsDir, dirent.name)
+    const skillMd = path.join(skillDir, 'SKILL.md')
+
+    let identifier = dirent.name
+    let description: string | undefined
+    let mtime: number | undefined
+
+    if (fs.existsSync(skillMd)) {
+      const fm = readFrontmatter(skillMd)
+      const fmName = typeof fm.name === 'string' ? fm.name : undefined
+      if (fmName && fmName.trim()) identifier = fmName.trim()
+      const fmDesc = coerceDescription(fm.description)
+      if (fmDesc) description = fmDesc
+      mtime = readMtime(skillMd)
+    } else {
+      // Skill directory without SKILL.md is unusual; record a soft warning
+      // so the audit report can flag it but do not block the scan.
+      warnings.push({
+        code: WARNING_CODES.PARSE_FAILED,
+        message: `skill directory ${skillDir} has no SKILL.md; using directory name as identifier`,
+        context: { path: skillDir },
+      })
+    }
+
+    const phrases = capTriggerSurface(
+      identifier,
+      [identifier, ...splitDescriptionToPhrases(description)],
+      warnings
+    )
+    const author = lookupAuthor(manifest, identifier)
+
+    out.push({
+      kind: 'skill',
+      source_path: skillMd,
+      identifier,
+      triggerSurface: phrases,
+      mtime,
+      meta: {
+        description,
+        author: author.author,
+        tags: author.tags,
+      },
+    })
+  }
+
+  return out
 }

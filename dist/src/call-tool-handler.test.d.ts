@@ -34,6 +34,16 @@
  * `createTestDatabase()`) and every network-capable tool here
  * (`search`/`get_skill`/`install_skill`) checks `apiClient.isOffline()`
  * before making a live call, so none of these tests touch the network.
+ *
+ * SMI-6362 §3/B-6 rewired the real `fetchConsentState` (inside
+ * `resolveConsent`, which `handleCallToolRequest` calls on every dispatch)
+ * from a direct `getSupabaseClient()` query to a POST against the
+ * `telemetry-consent` edge function. This file's consent-driving mock moved
+ * with it — global `fetch` is stubbed per test (mirrors the sibling
+ * `telemetry-consent-gate.test.ts`), not `getSupabaseClient` — see
+ * `mockConsentFetch` below. `getSupabaseClient` is still mocked (structural,
+ * unrelated to consent — see the comment on that `vi.mock` call) but no test
+ * here drives it anymore.
  */
 export {};
 //# sourceMappingURL=call-tool-handler.test.d.ts.map

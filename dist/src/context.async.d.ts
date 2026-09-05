@@ -8,7 +8,22 @@
  * 1. Try better-sqlite3 native module first (fastest)
  * 2. Fall back to sql.js WASM if native is unavailable
  */
+import { type TelemetryIdentity } from '@skillsmith/core';
 import type { ToolContext, ToolContextOptions } from './context.types.js';
+/** Test-only accessor for `cachedTelemetryIdentity`. Not exported from the package index. */
+export declare function _getCachedTelemetryIdentityForTests(): TelemetryIdentity | null;
+declare function refreshTelemetryIdentity(currentApiKey: string | undefined): Promise<void>;
+/**
+ * Test-only alias for `refreshTelemetryIdentity`, so the generation-guard
+ * ordering (NEEDLE confirmation-round finding 3) is directly testable
+ * without going through `createToolContextAsync`'s install-time/timer/
+ * invalidation-handler plumbing, none of which is what's under test there.
+ * The function itself stays unexported (it's real production logic, called
+ * internally); only this named alias is exported, matching this file's
+ * `_getCachedTelemetryIdentityForTests` convention. Not exported from the
+ * package index.
+ */
+export { refreshTelemetryIdentity as _refreshTelemetryIdentityForTests };
 /**
  * Create the shared tool context asynchronously with WASM fallback
  *

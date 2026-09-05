@@ -6,6 +6,7 @@
  * Provides human-readable formatting of search results for terminal/CLI display.
  */
 import { getTrustBadge } from '../utils/validation.js';
+import { formatScanCoverageCaveat } from './scan-coverage.format.js';
 /**
  * Format search results for terminal/CLI display.
  *
@@ -62,6 +63,11 @@ export function formatSearchResults(response) {
                 skill.score +
                 '/100 | Security: ' +
                 securityStatus);
+            // SMI-6033 Wave 2 (Gap 8): informational only — doesn't affect Security: above.
+            const scanCoverageCaveat = formatScanCoverageCaveat(skill.security?.scanCoverageIncomplete, skill.security?.scanCoverageNote);
+            if (scanCoverageCaveat) {
+                lines.push('   ' + scanCoverageCaveat);
+            }
             lines.push('   ' + skill.description);
             lines.push('   ID: ' + skill.id);
             // SMI-5327: surface license so consumers can evaluate usage terms.

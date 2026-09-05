@@ -55,7 +55,7 @@ export declare const privateRegistryManageInputSchema: z.ZodObject<{
     status: z.ZodOptional<z.ZodEnum<["pending", "approved", "rejected"]>>;
     note: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
-    action: "list" | "get" | "deprecate" | "undeprecate" | "approve" | "reject" | "submissions" | "install" | "namespace";
+    action: "list" | "deprecate" | "undeprecate" | "approve" | "reject" | "get" | "namespace" | "submissions" | "install";
     status?: "rejected" | "approved" | "pending" | undefined;
     version?: string | undefined;
     force?: boolean | undefined;
@@ -63,7 +63,7 @@ export declare const privateRegistryManageInputSchema: z.ZodObject<{
     note?: string | undefined;
     includeDeprecated?: boolean | undefined;
 }, {
-    action: "list" | "get" | "deprecate" | "undeprecate" | "approve" | "reject" | "submissions" | "install" | "namespace";
+    action: "list" | "deprecate" | "undeprecate" | "approve" | "reject" | "get" | "namespace" | "submissions" | "install";
     status?: "rejected" | "approved" | "pending" | undefined;
     version?: string | undefined;
     force?: boolean | undefined;

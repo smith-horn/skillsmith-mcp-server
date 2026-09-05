@@ -34,4 +34,9 @@ export declare function createProfileIncompleteResponse(): {
     isError: true;
 };
 export declare function withLicenseAndQuota<S extends ZodTypeAny>(toolName: string, args: Record<string, unknown> | undefined, schema: S, handler: (input: TypeOf<S>, ctx: ToolContext) => Promise<unknown>, toolContext: ToolContext, licenseMiddleware: LicenseMiddleware, quotaMiddleware: QuotaMiddleware): Promise<CallToolResult>;
+/**
+ * Check if a license is expiring soon (within 30 days).
+ * @internal Exported for testing. Moved here from license.ts (SMI-6098, 500-line limit).
+ */
+export declare function getExpirationWarning(expiresAt?: Date): string | undefined;
 //# sourceMappingURL=license.gate.d.ts.map

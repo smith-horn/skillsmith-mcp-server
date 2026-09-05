@@ -85,7 +85,7 @@ describe('formatRecommendations', () => {
         }, toolContext);
         expect(result.context.auto_detected).toBe(true);
         const formatted = formatRecommendations(result);
-        expect(formatted).toContain('auto-detected from your installed skills across all clients');
+        expect(formatted).toContain('auto-detected from your installed skills');
         expect(formatted).not.toContain('~/.claude/skills');
     });
     // SMI-1631: Role display in formatted output

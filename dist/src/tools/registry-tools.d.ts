@@ -5,10 +5,9 @@
  * @see SMI-5816: Private skill registry — real implementation
  * @see ADR-129: Postgres-native (JSONB) storage + real team-auth (migration 071)
  *
- * Enables enterprise teams to publish and manage skills in a private registry
- * scoped to their organization. Both metadata and packaged content live in the
- * `private_registry_skills` Postgres table (JSONB content, not S3 — ADR-129);
- * team-scoped RLS + an in-query team_id filter on the service-role path (ADR-116).
+ * Enables enterprise teams to publish and manage skills in a private registry scoped to their
+ * organization. Metadata + packaged content live in `private_registry_skills` (JSONB, not S3 —
+ * ADR-129); team-scoped RLS + an in-query team_id filter (ADR-116, SMI-6109 addendum).
  *
  * Backing service is selected at module load: the live Supabase-backed service
  * (registry-tools.live.ts) when Supabase is configured, else an in-memory stub
@@ -88,13 +87,13 @@ export interface PrivateRegistryManageResult {
 /**
  * PrivateRegistryService — team-scoped private registry CRUD.
  *
- * **Invariant (ADR-116)**: every method MUST treat `teamId` as the authoritative
- * scoping key and include an explicit `team_id = <teamId>` filter in the query.
- * The live Supabase implementation uses the service-role client, which bypasses
- * RLS — tenant isolation is enforced in the service, not the database.
+ * **Invariant (ADR-116, addendum SMI-6109)**: every method MUST filter explicitly on `teamId` —
+ * still true though every live method now runs on the caller's own JWT, not service-role (RLS
+ * alone isn't enough on `list`/`get`, per the addendum).
  *
  * @see packages/mcp-server/src/tools/registry-tools.live.ts
  * @see docs/internal/adr/129-private-skill-registry-real-implementation.md
+ * @see docs/internal/adr/116-mcp-server-service-role-for-team-scoped-tools.md (SMI-6109 addendum)
  */
 export interface PrivateRegistryService extends PrivateRegistryReviewService {
     publish(teamId: string, skillId: string, version: string, content: SkillContent, description?: string): Promise<RegistrySkill>;
@@ -133,7 +132,7 @@ export declare const executePrivateRegistryPublish: (input: {
     description?: string | undefined;
 }, _context: ToolContext) => Promise<PrivateRegistryPublishResult>;
 export declare const executePrivateRegistryManage: (input: {
-    action: "list" | "get" | "deprecate" | "undeprecate" | "approve" | "reject" | "submissions" | "install" | "namespace";
+    action: "list" | "deprecate" | "undeprecate" | "approve" | "reject" | "get" | "namespace" | "submissions" | "install";
     status?: "rejected" | "approved" | "pending" | undefined;
     version?: string | undefined;
     force?: boolean | undefined;

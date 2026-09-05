@@ -3,6 +3,12 @@
  * Covers all 4 sources (skills / commands / agents / CLAUDE.md) plus
  * fresh-install latency bound (P-ANTI-2 carryover) and CLAUDE.md
  * tolerance for malformed / missing files.
+ *
+ * SMI-6077: the skills source now scans EVERY supported client's native
+ * directory (CLIENT_IDS), not just Claude Code — see the `client` field
+ * coverage below, which uses Cursor as the representative non-Claude
+ * client fixture (same choice `inventory-collector.test.ts` makes for its
+ * own cross-harness coverage).
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -15,6 +21,7 @@ import {
   WARNING_CODES,
   capTriggerSurface,
   hashClaudeMdLine,
+  readEnabledPluginIds,
   splitDescriptionToPhrases,
   MAX_TRIGGER_PHRASES_PER_SKILL,
 } from '../../src/utils/local-inventory.helpers.js'
@@ -58,7 +65,65 @@ describe('scanLocalInventory', () => {
     expect(skill?.triggerSurface).toContain('docker')
   })
 
-  it('SMI-5456: also scans ~/.agents/skills (Source 1b, dual-path agent pack)', async () => {
+  it('SMI-6077: tags a Claude Code skill entry with client "claude-code"', async () => {
+    writeFile(
+      path.join(TEST_HOME, '.claude', 'skills', 'docker', 'SKILL.md'),
+      `---\nname: docker\n---\nbody\n`
+    )
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    const skill = result.entries.find((e) => e.identifier === 'docker')
+    expect(skill?.client).toBe('claude-code')
+  })
+
+  it('SMI-6077: scans ~/.cursor/skills (a non-Claude client native directory)', async () => {
+    writeFile(
+      path.join(TEST_HOME, '.cursor', 'skills', 'lint-helper', 'SKILL.md'),
+      `---\nname: lint-helper\ndescription: Cursor-only lint helper\n---\nbody\n`
+    )
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    const skill = result.entries.find((e) => e.identifier === 'lint-helper')
+    expect(skill).toBeDefined()
+    expect(skill?.kind).toBe('skill')
+    expect(skill?.client).toBe('cursor')
+    expect(skill?.source_path).toBe(
+      path.join(TEST_HOME, '.cursor', 'skills', 'lint-helper', 'SKILL.md')
+    )
+    expect(skill?.meta?.description).toBe('Cursor-only lint helper')
+  })
+
+  it('SMI-6077: scans every CLIENT_IDS client in the same pass, not just Claude Code + agents', async () => {
+    writeFile(
+      path.join(TEST_HOME, '.claude', 'skills', 'a', 'SKILL.md'),
+      `---\nname: a\n---\nbody\n`
+    )
+    writeFile(
+      path.join(TEST_HOME, '.cursor', 'skills', 'b', 'SKILL.md'),
+      `---\nname: b\n---\nbody\n`
+    )
+    writeFile(
+      path.join(TEST_HOME, '.copilot', 'skills', 'c', 'SKILL.md'),
+      `---\nname: c\n---\nbody\n`
+    )
+    writeFile(
+      path.join(TEST_HOME, '.codeium', 'windsurf', 'skills', 'd', 'SKILL.md'),
+      `---\nname: d\n---\nbody\n`
+    )
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    const byIdentifier = new Map(result.entries.map((e) => [e.identifier, e]))
+    expect(byIdentifier.get('a')?.client).toBe('claude-code')
+    expect(byIdentifier.get('b')?.client).toBe('cursor')
+    expect(byIdentifier.get('c')?.client).toBe('copilot')
+    expect(byIdentifier.get('d')?.client).toBe('windsurf')
+  })
+
+  it('SMI-6077: tags command entries with client "claude-code" (no other client has an equivalent directory)', async () => {
+    writeFile(path.join(TEST_HOME, '.claude', 'commands', 'ship.md'), `Ship code.\n`)
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    const cmd = result.entries.find((e) => e.kind === 'command')
+    expect(cmd?.client).toBe('claude-code')
+  })
+
+  it('SMI-5456: also scans ~/.agents/skills (the "agents" client, dual-path agent pack)', async () => {
     writeFile(
       path.join(TEST_HOME, '.agents', 'skills', 'skillsmith-agent', 'SKILL.md'),
       `---\nname: skillsmith-agent\ndescription: The Skillsmith Agent\n---\nbody\n`
@@ -68,6 +133,7 @@ describe('scanLocalInventory', () => {
       (e) => e.kind === 'skill' && e.identifier === 'skillsmith-agent'
     )
     expect(skill).toBeDefined()
+    expect(skill?.client).toBe('agents')
     expect(skill?.source_path).toBe(
       path.join(TEST_HOME, '.agents', 'skills', 'skillsmith-agent', 'SKILL.md')
     )
@@ -230,6 +296,312 @@ describe('scanLocalInventory', () => {
     expect(warnings).toHaveLength(1)
     expect(warnings[0]?.code).toBe(WARNING_CODES.TRIGGER_SURFACE_TRUNCATED)
     expect(warnings[0]?.context?.dropped_count).toBe(5)
+  })
+
+  it('SMI-6228: tags every Source 1-4 entry with origin "native-client"', async () => {
+    writeFile(
+      path.join(TEST_HOME, '.claude', 'skills', 'docker', 'SKILL.md'),
+      `---\nname: docker\n---\nbody\n`
+    )
+    writeFile(path.join(TEST_HOME, '.claude', 'commands', 'ship.md'), `Ship code.\n`)
+    writeFile(
+      path.join(TEST_HOME, '.claude', 'agents', 'reviewer.md'),
+      `---\nname: reviewer\ndescription: Reviews PRs\n---\nbody\n`
+    )
+    writeFile(
+      path.join(TEST_HOME, '.claude', 'CLAUDE.md'),
+      `## Trigger phrases\n\n- deploy to staging\n`
+    )
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    expect(result.entries.length).toBeGreaterThan(0)
+    expect(result.entries.every((e) => e.origin === 'native-client')).toBe(true)
+  })
+})
+
+describe('scanLocalInventory — Source 5 plugin scan (SMI-6228)', () => {
+  function writeSettings(content: unknown): void {
+    writeFile(path.join(TEST_HOME, '.claude', 'settings.json'), JSON.stringify(content))
+  }
+
+  function writePluginSkill(
+    marketplace: string,
+    plugin: string,
+    version: string,
+    skillName: string,
+    frontmatter: string
+  ): void {
+    writeFile(
+      path.join(
+        TEST_HOME,
+        '.claude',
+        'plugins',
+        'cache',
+        marketplace,
+        plugin,
+        version,
+        'skills',
+        skillName,
+        'SKILL.md'
+      ),
+      frontmatter
+    )
+  }
+
+  it('surfaces a skill from an enabled plugin (enabledPlugins[id] === true), tagged origin "plugin"', async () => {
+    writeSettings({ enabledPlugins: { 'foo@bar': true } })
+    writePluginSkill(
+      'bar',
+      'foo',
+      'abc123',
+      'shared-name',
+      `---\nname: shared-name\ndescription: Plugin skill\n---\nbody\n`
+    )
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    const pluginSkill = result.entries.find(
+      (e) => e.kind === 'skill' && e.identifier === 'shared-name' && e.origin === 'plugin'
+    )
+    expect(pluginSkill).toBeDefined()
+    expect(pluginSkill?.pluginId).toBe('foo@bar')
+    expect(pluginSkill?.client).toBeUndefined()
+    expect(pluginSkill?.meta?.description).toBe('Plugin skill')
+  })
+
+  it('a project skill and an enabled-plugin skill sharing an identifier both appear as distinct entries (real collision, SMI-6228)', async () => {
+    writeFile(
+      path.join(TEST_HOME, '.claude', 'skills', 'shared-name', 'SKILL.md'),
+      `---\nname: shared-name\n---\nbody\n`
+    )
+    writeSettings({ enabledPlugins: { 'foo@bar': true } })
+    writePluginSkill('bar', 'foo', 'abc123', 'shared-name', `---\nname: shared-name\n---\nbody\n`)
+
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    const matches = result.entries.filter(
+      (e) => e.kind === 'skill' && e.identifier === 'shared-name'
+    )
+    expect(matches).toHaveLength(2)
+    expect(matches.some((e) => e.origin === 'native-client' && e.client === 'claude-code')).toBe(
+      true
+    )
+    expect(matches.some((e) => e.origin === 'plugin' && e.pluginId === 'foo@bar')).toBe(true)
+  })
+
+  it('does NOT surface a skill from a disabled plugin (enabledPlugins[id] === false) — critical negative case', async () => {
+    writeSettings({ enabledPlugins: { 'foo@bar': false } })
+    writePluginSkill('bar', 'foo', 'abc123', 'shared-name', `---\nname: shared-name\n---\nbody\n`)
+
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    expect(result.entries.some((e) => e.origin === 'plugin')).toBe(false)
+    expect(result.entries.some((e) => e.identifier === 'shared-name')).toBe(false)
+  })
+
+  it('does NOT surface a skill from a plugin with a non-boolean enabledPlugins value', async () => {
+    writeSettings({ enabledPlugins: { 'foo@bar': 'true' } })
+    writePluginSkill('bar', 'foo', 'abc123', 'shared-name', `---\nname: shared-name\n---\nbody\n`)
+
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    expect(result.entries.some((e) => e.origin === 'plugin')).toBe(false)
+  })
+
+  it('degrades gracefully with no settings.json at all (no plugin entries, no warning)', async () => {
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    expect(result.entries.some((e) => e.origin === 'plugin')).toBe(false)
+    expect(result.warnings.some((w) => w.code === WARNING_CODES.PLUGIN_SCAN_SKIPPED)).toBe(false)
+  })
+
+  it('degrades gracefully when settings.json exists but has no enabledPlugins key', async () => {
+    writeSettings({ model: 'sonnet' })
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    expect(result.entries.some((e) => e.origin === 'plugin')).toBe(false)
+    expect(result.warnings.some((w) => w.code === WARNING_CODES.PLUGIN_SCAN_SKIPPED)).toBe(false)
+  })
+
+  it('degrades gracefully with a warning when an enabled plugin has no cache directory', async () => {
+    writeSettings({ enabledPlugins: { 'ghost@nowhere': true } })
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    expect(result.entries.some((e) => e.origin === 'plugin')).toBe(false)
+    expect(result.warnings.some((w) => w.code === WARNING_CODES.PLUGIN_SCAN_SKIPPED)).toBe(true)
+  })
+
+  it('degrades gracefully with a warning when a plugin cache dir has zero version directories', async () => {
+    writeSettings({ enabledPlugins: { 'foo@bar': true } })
+    fs.mkdirSync(path.join(TEST_HOME, '.claude', 'plugins', 'cache', 'bar', 'foo'), {
+      recursive: true,
+    })
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    expect(result.entries.some((e) => e.origin === 'plugin')).toBe(false)
+    expect(result.warnings.some((w) => w.code === WARNING_CODES.PLUGIN_SCAN_SKIPPED)).toBe(true)
+  })
+
+  it('degrades gracefully with a warning when a plugin cache dir has multiple version directories', async () => {
+    writeSettings({ enabledPlugins: { 'foo@bar': true } })
+    writePluginSkill('bar', 'foo', 'v1', 'a', `---\nname: a\n---\nbody\n`)
+    writePluginSkill('bar', 'foo', 'v2', 'b', `---\nname: b\n---\nbody\n`)
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    expect(result.entries.some((e) => e.origin === 'plugin')).toBe(false)
+    expect(result.warnings.some((w) => w.code === WARNING_CODES.PLUGIN_SCAN_SKIPPED)).toBe(true)
+  })
+
+  it('degrades gracefully with a warning on malformed settings.json JSON', async () => {
+    writeFile(path.join(TEST_HOME, '.claude', 'settings.json'), '{not valid json')
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    expect(result.entries.some((e) => e.origin === 'plugin')).toBe(false)
+    expect(result.warnings.some((w) => w.code === WARNING_CODES.PARSE_FAILED)).toBe(true)
+  })
+
+  it('path-traversal-shaped plugin ids are rejected, never escape the cache root (cross-provider review finding, PR #2581)', async () => {
+    // A plugin id is an unvalidated enabledPlugins KEY. Confirm
+    // "../outside@../.." (and simpler single-".." variants) never resolve
+    // outside <home>/.claude/plugins/cache, even when a real SKILL.md sits
+    // at the traversal target.
+    writeSettings({
+      enabledPlugins: {
+        '../outside@../..': true,
+        '..@bar': true,
+        'foo@..': true,
+      },
+    })
+    writeFile(
+      path.join(TEST_HOME, '.claude', 'plugins', 'outside', 'v1', 'skills', 'evil', 'SKILL.md'),
+      `---\nname: evil\n---\nbody\n`
+    )
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    expect(result.entries.some((e) => e.origin === 'plugin')).toBe(false)
+    expect(result.entries.some((e) => e.identifier === 'evil')).toBe(false)
+  })
+
+  it('a symlinked plugin directory pointing outside the cache root is rejected (cross-provider review finding, PR #2581)', async () => {
+    // The traversal guard above is purely lexical (path separators / "..").
+    // A symlink whose own path segment looks clean can still resolve
+    // outside the cache root on disk.
+    writeSettings({ enabledPlugins: { 'foo@bar': true } })
+
+    const outsideDir = path.join(TEST_HOME, 'outside-the-cache', 'v1', 'skills', 'evil')
+    fs.mkdirSync(outsideDir, { recursive: true })
+    fs.writeFileSync(path.join(outsideDir, 'SKILL.md'), `---\nname: evil\n---\nbody\n`)
+
+    const cacheDir = path.join(TEST_HOME, '.claude', 'plugins', 'cache', 'bar')
+    fs.mkdirSync(cacheDir, { recursive: true })
+    fs.symlinkSync(path.join(TEST_HOME, 'outside-the-cache'), path.join(cacheDir, 'foo'))
+
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    expect(result.entries.some((e) => e.origin === 'plugin')).toBe(false)
+    expect(result.entries.some((e) => e.identifier === 'evil')).toBe(false)
+  })
+})
+
+describe('scanLocalInventory — Source 6 project skills (SMI-6240)', () => {
+  let TEST_PROJECT_DIR: string
+
+  beforeEach(() => {
+    TEST_PROJECT_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'skillsmith-project-'))
+  })
+
+  afterEach(() => {
+    if (TEST_PROJECT_DIR && fs.existsSync(TEST_PROJECT_DIR)) {
+      fs.rmSync(TEST_PROJECT_DIR, { recursive: true, force: true })
+    }
+  })
+
+  function writeProjectSkill(name: string, frontmatter: string): void {
+    writeFile(path.join(TEST_PROJECT_DIR, '.claude', 'skills', name, 'SKILL.md'), frontmatter)
+  }
+
+  it('surfaces a skill from the project-relative .claude/skills/, tagged origin "project"', async () => {
+    writeProjectSkill('supabase', `---\nname: supabase\ndescription: Project skill\n---\nbody\n`)
+    const result = await scanLocalInventory({ homeDir: TEST_HOME, projectDir: TEST_PROJECT_DIR })
+    const entry = result.entries.find((e) => e.kind === 'skill' && e.identifier === 'supabase')
+    expect(entry).toBeDefined()
+    expect(entry?.origin).toBe('project')
+    expect(entry?.client).toBe('claude-code')
+    expect(entry?.pluginId).toBeUndefined()
+  })
+
+  it('a real collision: the same identifier from an enabled plugin and this project surfaces as two distinct entries (SMI-6240 — the scenario Source 5 alone did not close)', async () => {
+    writeProjectSkill('supabase', `---\nname: supabase\n---\nbody\n`)
+    writeFile(
+      path.join(TEST_HOME, '.claude', 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'foo@bar': true } })
+    )
+    writeFile(
+      path.join(
+        TEST_HOME,
+        '.claude',
+        'plugins',
+        'cache',
+        'bar',
+        'foo',
+        'v1',
+        'skills',
+        'supabase',
+        'SKILL.md'
+      ),
+      `---\nname: supabase\n---\nbody\n`
+    )
+    const result = await scanLocalInventory({ homeDir: TEST_HOME, projectDir: TEST_PROJECT_DIR })
+    const matches = result.entries.filter((e) => e.kind === 'skill' && e.identifier === 'supabase')
+    expect(matches).toHaveLength(2)
+    expect(matches.some((e) => e.origin === 'project')).toBe(true)
+    expect(matches.some((e) => e.origin === 'plugin' && e.pluginId === 'foo@bar')).toBe(true)
+  })
+
+  it('does NOT surface project skills when projectDir is not passed (existing callers unaffected)', async () => {
+    writeProjectSkill('supabase', `---\nname: supabase\n---\nbody\n`)
+    const result = await scanLocalInventory({ homeDir: TEST_HOME })
+    expect(result.entries.some((e) => e.origin === 'project')).toBe(false)
+  })
+
+  it('degrades gracefully when the project has no .claude/skills/ at all (e.g. the strategy submodule uninitialized)', async () => {
+    const result = await scanLocalInventory({ homeDir: TEST_HOME, projectDir: TEST_PROJECT_DIR })
+    expect(result.entries.some((e) => e.origin === 'project')).toBe(false)
+  })
+
+  it('a symlinked .claude/skills pointing outside projectDir is rejected, not followed (GPT-5.6-Sol review finding, commit 4a883c9aa)', async () => {
+    // Mirrors the Source 5 plugin symlink-escape test above: the lexical
+    // `path.join(projectDir, '.claude', 'skills')` looks safe even when
+    // `.claude` (or `skills`) is a symlink that resolves outside
+    // projectDir on disk.
+    const outsideDir = path.join(TEST_HOME, 'outside-the-project', 'skills', 'evil')
+    fs.mkdirSync(outsideDir, { recursive: true })
+    fs.writeFileSync(path.join(outsideDir, 'SKILL.md'), `---\nname: evil\n---\nbody\n`)
+
+    fs.symlinkSync(
+      path.join(TEST_HOME, 'outside-the-project'),
+      path.join(TEST_PROJECT_DIR, '.claude')
+    )
+
+    const result = await scanLocalInventory({ homeDir: TEST_HOME, projectDir: TEST_PROJECT_DIR })
+    expect(result.entries.some((e) => e.origin === 'project')).toBe(false)
+    expect(result.entries.some((e) => e.identifier === 'evil')).toBe(false)
+    expect(result.warnings.some((w) => w.code === WARNING_CODES.PROJECT_SKILLS_SCAN_SKIPPED)).toBe(
+      true
+    )
+  })
+})
+
+describe('readEnabledPluginIds', () => {
+  it('returns only ids whose value is exactly boolean true', () => {
+    const warnings: ScanWarning[] = []
+    const settingsPath = path.join(TEST_HOME, '.claude', 'settings.json')
+    writeFile(
+      settingsPath,
+      JSON.stringify({
+        enabledPlugins: {
+          'a@market': true,
+          'b@market': false,
+          'c@market': 'true',
+        },
+      })
+    )
+    expect(readEnabledPluginIds(settingsPath, warnings)).toEqual(['a@market'])
+    expect(warnings).toEqual([])
+  })
+
+  it('returns [] when settings.json is missing', () => {
+    const warnings: ScanWarning[] = []
+    expect(
+      readEnabledPluginIds(path.join(TEST_HOME, '.claude', 'settings.json'), warnings)
+    ).toEqual([])
+    expect(warnings).toEqual([])
   })
 })
 

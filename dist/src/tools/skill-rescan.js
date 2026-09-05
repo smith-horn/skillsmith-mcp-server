@@ -21,6 +21,7 @@ import { resolveClientPath } from '@skillsmith/core/install';
 import { scanLocalBundleSiblings } from '@skillsmith/core/services/bundled-sibling-scan';
 import { parseFrontmatter } from '../indexer/FrontmatterParser.js';
 import { backfillSkillDependencies, discoverInstalledSkills } from './skill-rescan.helpers.js';
+import { detectTyposquatInName } from './validate-typosquat-scan.js';
 // ============================================================================
 // Input / Output types
 // ============================================================================
@@ -181,16 +182,41 @@ async function executeSkillRescanImpl(input, overrideDir, quarantineRepo, skillD
         // not the SKILL.md — quarantines the skill so local search hides it. The
         // sibling rejection is FP-safe: driven only by code_execution/
         // obfuscated_directive (see scanLocalBundleSiblings module header).
-        const siblingScan = await scanLocalBundleSiblings(dirname(skill.skillMdPath), scanner);
+        // SMI-6033 Wave 2 (Gap 8): `primaryContent` feeds the tier-1 ranking check
+        // ("is this operational-code file referenced by path from SKILL.md?"), so
+        // a referenced payload outranks unreferenced decoys under the count cap.
+        const siblingScan = await scanLocalBundleSiblings(dirname(skill.skillMdPath), scanner, {
+            primaryContent: content,
+        });
         const siblingRejected = siblingScan.rejectable;
-        // Display set = SKILL.md findings + sibling DRIVER findings only. Non-driver
-        // sibling findings (e.g. a benign `chmod`/`cp .env` that fires high/critical
-        // in a non-markdown file with no doc-context downgrade) are deliberately
-        // EXCLUDED so the entry's severityCounts/findingCount/topFindings/riskScore
-        // stay consistent with `passed` and never show a contradictory
-        // `critical:1, passed:true`. What was scanned/skipped is still surfaced via
-        // `bundledSiblings`.
-        const displayFindings = [...report.findings, ...siblingScan.rejectableFindings];
+        // SMI-6033 Wave 1 (Gap 7, cross-model review follow-up): skill_rescan had no
+        // typosquat check at all, while the indexer and skill_validate both do — an
+        // installed impersonation skill was invisible to the one tool whose whole
+        // job is re-evaluating installed skills against CURRENT detection patterns.
+        // Uses the same bundled, offline reference snapshot skill_validate loads
+        // (one module-level cache, one detector policy — see
+        // validate-typosquat-scan.ts), so this stays a zero-network local scan.
+        //
+        // Warn-tier by construction: `detectTyposquatInName` runs the detector in
+        // SMI-595 `warn` mode, which caps severity at `medium`. It is therefore
+        // surfaced (findingCount / severityCounts / topFindings) but deliberately
+        // NOT folded into `drivingFindings` below, so it can never flip `passed`
+        // or create a quarantine on its own — matching the indexer's own
+        // warn-tier treatment and this plan's §9 reconciliation policy.
+        const typosquatFindings = detectTyposquatInName(canonicalName);
+        // Display set = SKILL.md findings + sibling DRIVER findings + warn-tier
+        // typosquat findings. Non-driver sibling findings (e.g. a benign
+        // `chmod`/`cp .env` that fires high/critical in a non-markdown file with no
+        // doc-context downgrade) are deliberately EXCLUDED so the entry's
+        // severityCounts/findingCount/topFindings/riskScore stay consistent with
+        // `passed` and never show a contradictory `critical:1, passed:true`. Adding
+        // typosquat preserves that invariant: warn mode never emits above `medium`.
+        // What was scanned/skipped is still surfaced via `bundledSiblings`.
+        const displayFindings = [
+            ...report.findings,
+            ...siblingScan.rejectableFindings,
+            ...typosquatFindings,
+        ];
         const severityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
         for (const finding of displayFindings) {
             severityCounts[finding.severity]++;

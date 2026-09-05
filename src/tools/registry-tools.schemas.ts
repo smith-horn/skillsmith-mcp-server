@@ -113,7 +113,7 @@ export const privateRegistryPublishToolSchema = {
   description:
     "Publish a skill to your organization's private registry. " +
     'Requires Enterprise tier (private_registry feature). ' +
-    'Skills are scoped to your team namespace and published versions are immutable. ' +
+    "Skills are scoped to your team's registry namespace and published versions are immutable. " +
     'A published version is not installable by teammates until a team admin approves it — ' +
     'see private_registry_manage action "submissions" to check its status.',
   inputSchema: {
@@ -166,7 +166,7 @@ export const privateRegistryManageToolSchema = {
           'reject',
         ],
         description:
-          'Registry operation to perform. "namespace" returns your team\'s publish ' +
+          'Registry operation to perform. "namespace" returns your team\'s registry ' +
           'namespace (the required skill_id prefix) without attempting a publish. ' +
           '"install" downloads the skill and writes it to your skills directory. ' +
           '"submissions" lists review-gate items awaiting or already given a decision — ' +

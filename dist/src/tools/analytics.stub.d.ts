@@ -1,13 +1,16 @@
 /**
- * @fileoverview Stub data generators and fallback handlers for analytics MCP tools
+ * @fileoverview Shared date/period helpers for analytics MCP tools
  * @module @skillsmith/mcp-server/tools/analytics.stub
  * @see SMI-3899: Team Usage Analytics MCP Tools (Wave 2b)
  * @see SMI-3914: Wave 0 stub extraction
  * @see SMI-3916: Wave 2 — stub fallbacks extracted from analytics.ts
- *
- * Extracted from analytics.ts for file-size compliance.
- * Provides deterministic mock data generators and fallback handler
- * implementations used when no real database is available.
+ * @see SMI-6362 Wave 4 — the four fabricated stub-response generators this file used to hold
+ *   (fake emails, fake team names, fake percentages) were removed. All four Team/Enterprise
+ *   analytics tools are cloud-first now (analytics.actions.ts) and render an actionable error
+ *   instead of silently falling back to fabricated data when the cloud path is unavailable — see
+ *   analytics.actions.ts's module doc comment. Keeping fabricated-data generators around unused
+ *   was itself a regression risk: a future change re-wiring them back in would silently
+ *   reintroduce the exact invisible-success failure mode this feature exists to fix.
  */
 /** Map period string to number of days */
 export declare function periodDays(period: string): number;
@@ -16,12 +19,4 @@ export declare function generateDailyTrend(days: number): Array<{
     date: string;
     calls: number;
 }>;
-/** Stub fallback for team analytics dashboard */
-export declare function stubTeamAnalyticsDashboard(period: string): string;
-/** Stub fallback for team usage report */
-export declare function stubTeamUsageReport(period: string, format: string): string;
-/** Stub fallback for enterprise analytics dashboard */
-export declare function stubAnalyticsDashboard(period: string, includeRecommendations: boolean): string;
-/** Stub fallback for enterprise usage report */
-export declare function stubUsageReport(period: string, format: string): string;
 //# sourceMappingURL=analytics.stub.d.ts.map

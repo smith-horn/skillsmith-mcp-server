@@ -66,6 +66,11 @@ export declare const installTool: {
                 type: string;
                 description: string;
             };
+            scope: {
+                type: string;
+                enum: string[];
+                description: string;
+            };
         };
         required: string[];
     };

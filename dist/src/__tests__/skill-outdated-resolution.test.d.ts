@@ -22,7 +22,12 @@
  * git tier's owner/skill-name, is what skill_outdated keys on.
  *
  * $HOME is set BEFORE the dynamic import of outdated.js (its install.helpers
- * module-level MANIFEST_PATH freezes at import).
+ * module-level MANIFEST_PATH freezes at import — and, as of SMI-6343 Wave 3,
+ * so does `@skillsmith/core/install`'s CLIENT_NATIVE_PATHS, which the new
+ * path-unresolved identity signal reads). `vi.resetModules()` runs between
+ * the env-var write and the dynamic import so both frozen constants are
+ * re-evaluated against the redirected $HOME (same technique as
+ * `manage-update-multi-client.test.ts` / `manage-multi-client.test.ts`).
  */
 export {};
 //# sourceMappingURL=skill-outdated-resolution.test.d.ts.map

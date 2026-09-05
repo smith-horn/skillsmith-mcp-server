@@ -132,6 +132,7 @@ export async function dispatchToolCall(name, args, toolContext, licenseMiddlewar
         case 'apply_namespace_rename':
         case 'apply_recommended_edit':
         case 'undo_apply':
+        case 'apply_manifest_reconcile':
             // SMI-4590 Step 0b: audit-family tools live in `audit-tool-dispatch.ts`
             // to keep this file under the 500-LOC gate. SMI-5456 §7 / SMI-5470:
             // added the explicit cases for `skill_inventory_audit` /
@@ -139,7 +140,9 @@ export async function dispatchToolCall(name, args, toolContext, licenseMiddlewar
             // they were previously routed nowhere (fell through to `default`'s
             // "Unknown tool" throw despite being ListTools-discoverable and
             // dispatch-implemented in `audit-tool-dispatch.ts`); a call to any of
-            // them from a real MCP client would have failed.
+            // them from a real MCP client would have failed. SMI-6343 Wave 4 adds
+            // `apply_manifest_reconcile` to this same explicit list for the same
+            // reason — omitting it here would make it discoverable-but-uncallable.
             return dispatchAuditTool(name, args, toolContext, licenseMiddleware, quotaMiddleware);
         case 'skill_rescan': {
             const parsed = safeParseOrError(skillRescanInputSchema, args, 'skill_rescan');

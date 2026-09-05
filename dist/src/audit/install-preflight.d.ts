@@ -62,7 +62,11 @@ export interface CandidateSkill {
     packDomain?: string | null;
 }
 export interface RunInstallPreflightInput {
-    /** Pre-candidate snapshot of `~/.claude/{skills,commands,agents}` + CLAUDE.md. */
+    /**
+     * Pre-candidate snapshot from `scanLocalInventory` — every supported
+     * client's skills directory (SMI-6077), plus Claude Code's own
+     * `{commands,agents}` + CLAUDE.md rules.
+     */
     existingInventory: ReadonlyArray<InventoryEntry>;
     /** Synthesized candidate skill being considered for install. */
     candidate: CandidateSkill;

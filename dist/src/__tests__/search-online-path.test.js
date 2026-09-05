@@ -113,7 +113,13 @@ describe('Search Tool - Online API Path (SMI-2755)', () => {
             data: [],
             meta: { total: 0 },
         });
-        await executeSearch({ query: 'commit' }, onlineContext);
+        // SMI-6362 (D-7): distinctId is now the persisted, unconditional install
+        // id — createTestContext's real createToolContextAsync() always returns
+        // one, so it is no longer naturally absent. Explicitly override to
+        // undefined to still exercise the skip-when-absent defensive path (a
+        // ToolContext built outside context.async.ts can still omit it).
+        const contextWithoutId = { ...onlineContext, distinctId: undefined };
+        await executeSearch({ query: 'commit' }, contextWithoutId);
         expect(trackSpy).not.toHaveBeenCalled();
     });
     it('returns installHint from API results when author is set', async () => {
@@ -172,6 +178,8 @@ describe('Search Tool - Online API Path (SMI-2755)', () => {
                 riskScore: 0,
                 findingsCount: 0,
                 scannedAt: '2026-06-01T00:00:00.000Z',
+                scanCoverageIncomplete: false,
+                scanCoverageNote: null,
             });
         });
         it('leaves security undefined for a never-scanned API result', async () => {

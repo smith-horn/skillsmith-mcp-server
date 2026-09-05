@@ -12,10 +12,10 @@
  * expanded from Enterprise-only 2026-07-14).
  */
 import { z } from 'zod';
-import { isSupabaseConfigured } from '../supabase-client.js';
 import { withTelemetry } from '@skillsmith/core/telemetry';
 import { createRealComplianceService } from './compliance-tools.service.js';
 import { formatCycloneDx as buildCycloneDxBom } from './compliance-tools.cyclonedx.js';
+import { markAsStub, dataSourceFor } from './stub-data-source.js';
 // ============================================================================
 // Input schemas
 // ============================================================================
@@ -81,7 +81,7 @@ export const complianceReportToolSchema = {
 // ============================================================================
 /** @internal Exported for testing */
 export function createStubComplianceService() {
-    return {
+    return markAsStub({
         async gatherData(periodDays, includeUserActivity) {
             const now = new Date();
             const periodStart = new Date(now.getTime() - periodDays * 24 * 60 * 60 * 1000);
@@ -129,7 +129,7 @@ export function createStubComplianceService() {
                 },
             };
         },
-    };
+    });
 }
 // Module-level singleton
 let service = createStubComplianceService();
@@ -215,18 +215,21 @@ function formatJson(data, period) {
 async function executeComplianceReportImpl(input, context) {
     const period = input.period ?? '90d';
     const days = periodToDays(period);
-    // Use real service when db is available, otherwise fall back to stub
+    // Use real service when db is available, otherwise fall back to stub.
+    // SMI-6184: dataSource is derived from whichever service actually ends up
+    // in use (via dataSourceFor), not from Supabase env config — so a thrown
+    // constructor or an unavailable db correctly falls back to reporting 'stub'.
     let activeService = service;
-    let dataSource = isSupabaseConfigured() ? 'live' : 'stub';
     try {
         if (context.db && context.db.open) {
             activeService = createRealComplianceService(context.db);
-            dataSource = 'live';
         }
     }
     catch {
         // Fall through to stub service
+        activeService = service;
     }
+    const dataSource = dataSourceFor(activeService);
     const data = await activeService.gatherData(days, input.includeUserActivity ?? true);
     const generatedAt = new Date().toISOString();
     switch (input.format) {

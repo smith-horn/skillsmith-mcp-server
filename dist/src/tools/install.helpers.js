@@ -2,119 +2,18 @@
  * @fileoverview Install Tool Helper Functions
  * @module @skillsmith/mcp-server/tools/install.helpers
  */
-import * as fs from 'fs/promises';
-import * as path from 'path';
 // SMI-2171: Import parseRepoUrl from @skillsmith/core for shared use
-import { parseRepoUrl, QuarantineRepository } from '@skillsmith/core';
+import { parseRepoUrl, QuarantineRepository, SkillsmithError, ErrorCodes, } from '@skillsmith/core';
 import { CANONICAL_CLIENT, CLIENT_DISPLAY_LABELS } from '@skillsmith/core/install';
-import { MANIFEST_PATH, SKILLSMITH_DIR, validateTrustTier, } from './install.types.js';
+import { validateTrustTier } from './install.types.js';
 // Re-export for backward compatibility
 export { parseRepoUrl };
 // ============================================================================
-// Manifest Locking
+// Manifest Locking + Operations (SMI-6274 Wave 4 round 2, 500-line file cap)
+// Split to install.helpers.manifest.ts per governance code review
 // ============================================================================
-/**
- * SMI-1533: Lock file path for manifest operations
- */
-const MANIFEST_LOCK_PATH = MANIFEST_PATH + '.lock';
-const LOCK_TIMEOUT_MS = 30000; // 30 seconds max wait for lock
-const LOCK_RETRY_INTERVAL_MS = 100;
-/**
- * Acquire a file lock for manifest operations
- * SMI-1533: Prevents race conditions during concurrent installs
- */
-export async function acquireManifestLock() {
-    const startTime = Date.now();
-    // Ensure the skillsmith directory exists before attempting to create lock file
-    // This fixes ENOENT errors in CI environments where ~/.skillsmith doesn't exist
-    await fs.mkdir(SKILLSMITH_DIR, { recursive: true });
-    while (Date.now() - startTime < LOCK_TIMEOUT_MS) {
-        try {
-            // Try to create lock file exclusively
-            await fs.writeFile(MANIFEST_LOCK_PATH, String(process.pid), { flag: 'wx' });
-            return; // Lock acquired
-        }
-        catch (error) {
-            if (error.code === 'EEXIST') {
-                // Lock exists, check if it's stale (older than timeout)
-                try {
-                    const stats = await fs.stat(MANIFEST_LOCK_PATH);
-                    const lockAge = Date.now() - stats.mtimeMs;
-                    if (lockAge > LOCK_TIMEOUT_MS) {
-                        // Stale lock, remove it and retry
-                        await fs.unlink(MANIFEST_LOCK_PATH).catch(() => { });
-                        continue;
-                    }
-                }
-                catch {
-                    // Lock file disappeared, retry
-                    continue;
-                }
-                // Wait before retrying
-                await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_INTERVAL_MS));
-            }
-            else {
-                throw error;
-            }
-        }
-    }
-    throw new Error('Failed to acquire manifest lock after ' + LOCK_TIMEOUT_MS + 'ms');
-}
-/**
- * Release the manifest lock
- */
-export async function releaseManifestLock() {
-    try {
-        await fs.unlink(MANIFEST_LOCK_PATH);
-    }
-    catch {
-        // Ignore errors - lock may already be released
-    }
-}
-// ============================================================================
-// Manifest Operations
-// ============================================================================
-/**
- * Load or create manifest
- */
-export async function loadManifest() {
-    try {
-        const content = await fs.readFile(MANIFEST_PATH, 'utf-8');
-        return JSON.parse(content);
-    }
-    catch {
-        return {
-            version: '1.0.0',
-            installedSkills: {},
-        };
-    }
-}
-/**
- * Save manifest
- * SMI-1533: Uses atomic write pattern with lock
- */
-export async function saveManifest(manifest) {
-    await fs.mkdir(path.dirname(MANIFEST_PATH), { recursive: true });
-    // Write to temp file first, then rename for atomic operation
-    const tempPath = MANIFEST_PATH + '.tmp.' + process.pid;
-    await fs.writeFile(tempPath, JSON.stringify(manifest, null, 2));
-    await fs.rename(tempPath, MANIFEST_PATH);
-}
-/**
- * SMI-1533: Safely update manifest with locking
- * Prevents race conditions during concurrent install operations
- */
-export async function updateManifestSafely(updateFn) {
-    await acquireManifestLock();
-    try {
-        const manifest = await loadManifest();
-        const updatedManifest = updateFn(manifest);
-        await saveManifest(updatedManifest);
-    }
-    finally {
-        await releaseManifestLock();
-    }
-}
+// Re-export manifest helpers from dedicated module
+export { acquireManifestLock, releaseManifestLock, loadManifest, saveManifest, updateManifestSafely, } from './install.helpers.manifest.js';
 // ============================================================================
 // Parsing Functions
 // ============================================================================
@@ -189,7 +88,7 @@ export function parseSkillId(input) {
  * branch, which the shared resolver has no concept of — any future
  * consolidation must preserve that gate on both branches (cf. SMI-5447).
  */
-export async function lookupSkillFromRegistry(skillId, context) {
+export async function lookupSkillFromRegistry(skillId, context, options) {
     // Try API first (primary data source)
     if (!context.apiClient.isOffline()) {
         try {
@@ -204,12 +103,19 @@ export async function lookupSkillFromRegistry(skillId, context) {
                     quarantined: response.data.quarantined === true,
                     // SMI-3510: Content hash for tamper detection
                     contentHash: response.data.content_hash ?? undefined,
+                    // SMI-6343 Wave 3: used by the shared identity-classification
+                    // module's front-matter-contradiction signal.
+                    author: response.data.author ?? null,
                 };
             }
             // API found skill but no repo_url - it's seed data
             return null;
         }
-        catch {
+        catch (error) {
+            if (error instanceof SkillsmithError && error.code === ErrorCodes.NETWORK_QUOTA_EXCEEDED) {
+                options?.onQuotaExceeded?.(error);
+            }
+            options?.onLiveLookupFailed?.(error);
             // API failed, fall through to local DB
         }
     }
@@ -226,6 +132,9 @@ export async function lookupSkillFromRegistry(skillId, context) {
             trustTier: validateTrustTier(dbSkill.trustTier),
             // SMI-2437: Pass through quarantine status from local DB
             quarantined: isQuarantined,
+            // SMI-6343 Wave 3: used by the shared identity-classification
+            // module's front-matter-contradiction signal.
+            author: dbSkill.author ?? null,
         };
     }
     return null;

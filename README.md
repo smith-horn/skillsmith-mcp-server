@@ -6,16 +6,20 @@
 
 MCP (Model Context Protocol) server for agent skill publishing, installation, and lifecycle management.
 
-Part of Skillsmith: a lifecycle layer for agent skills across teams.
+Part of Skillsmith: a registry for sharing, scanning, and tracking agent skills across teams.
 
-## What's New in v0.7.9
+## What's New in v0.7.13
 
-- **`search`'s `limit` parameter actually works now**: previously advertised in the tool description but silently dropped — no `limit` field existed in the input schema at all. Now threaded through both the API and local-fallback paths, clamped to `[1, 100]`.
-- **`skill_compare` and `skill_recommend` fixed**: compare now resolves any skill `search`/`get_skill` can find (was local-cache-only); recommend no longer 400s or silently zeroes on an empty derived stack — both return a structured, actionable result instead.
-- **`skill_updates` scoped to your installed skills**: was running an unfiltered registry-wide scan (`updatesAvailable: 2833` for a handful of installs); now bounded to the local manifest, sharing derivation with `skill_outdated` so the two can't drift apart again.
-- **Trust-tier vocabulary fixed**: `mapTrustTierFromDb` was silently collapsing `official` and `unverified` to `unknown`; all `TrustTier` values now round-trip correctly across `search`, `get_skill`, `skill_recommend`, `skill_compare`, and `skill_suggest`.
-- **New local security-acceptance allowlist**: mark a reviewed false-positive finding as accepted so it stops re-surfacing in future audits, without affecting rug-pull/hostile-update detection.
-- **`private_registry_manage` gains `install`**: installs a previously-published private-registry skill to disk, closing the publish→install gap.
+- **Fix: 0.7.10 was uninstallable** — it imported `@skillsmith/core` exports (`SessionTierAuthError`, `SessionTierTransientError`, `resolveSessionTier`, `getApiBaseUrl`) that only shipped in core 0.12.0, but this package's own dependency floor still allowed the older, broken-for-this-purpose 0.11.7. The `@skillsmith/core` dependency is now `^0.12.0` (SMI-6143). No other changes in this release.
+
+### What's New in v0.7.10
+
+- **Security: `SUPABASE_SERVICE_ROLE_KEY` removed from every MCP-host code path**: `private_registry_manage`'s `list`, `get`, `namespace`, and `install` actions — plus the registry-install path — no longer run on the Supabase service-role client. They now run as the signed-in user (`skillsmith login`) or through a narrowly-scoped `SECURITY DEFINER` RPC, so there's no admin credential left to configure or distribute (SMI-6109/SMI-6111).
+- **Session-login users now get their real subscription tier**: callers authenticated only via `skillsmith login` (no separately-configured `SKILLSMITH_API_KEY`) previously fell back to `community` regardless of actual entitlement, silently blocking Enterprise-gated tools like `private_registry_manage`/`private_registry_publish` (SMI-6098).
+- **`skill_validate` now flags likely typosquats**: warns (non-blocking) when a candidate skill's name is suspiciously close to a high-trust author or top-starred skill (SMI-6033).
+- **`get_skill`/`search`/`skill_recommend` surface a partial-scan caveat**: an informational note when the registry's extended scan couldn't cover every file for a skill — never affects the Security/Installable verdict.
+- **Pricing and quota numbers corrected**: several bundled skills, tool descriptions, and error messages were off by 10x or referenced the unpublished Enterprise price; now consistent with the actual tier table (SMI-5893).
+- **Auto-update notification no longer silently drops** on an invalid `SKILLSMITH_CLIENT` value.
 
 See [CHANGELOG.md](./CHANGELOG.md) for previous releases.
 
@@ -75,8 +79,7 @@ Restart Claude Code after editing settings.json.
 {
   "mcpServers": {
     "skillsmith": {
-      "command": "npx",
-      "args": ["-y", "-p", "@skillsmith/mcp-server", "skillsmith-mcp"],
+      "command": "<paste output of: which skillsmith-mcp (macOS/Linux) or where skillsmith-mcp (Windows)>",
       "env": {
         "SKILLSMITH_API_KEY": "sk_live_...",
         "SKILLSMITH_CLIENT": "cursor"
@@ -86,9 +89,9 @@ Restart Claude Code after editing settings.json.
 }
 ```
 
-Cursor 2.4+ required. Reload the window after saving. `SKILLSMITH_CLIENT` routes installs to `~/.cursor/skills` instead of the default `~/.claude/skills`.
+Cursor 2.4+ required, Node >=22.22 (Cursor's own bundled Node meets this). `SKILLSMITH_CLIENT` routes installs to `~/.cursor/skills` instead of the default `~/.claude/skills`.
 
-**Recommended**: `npm install -g @skillsmith/mcp-server` first, then point `command` at the installed `skillsmith-mcp` binary — run `which skillsmith-mcp` after installing to get the exact path (it's platform/npm-prefix specific, e.g. `/opt/homebrew/bin/skillsmith-mcp` on macOS/Homebrew; Linux and Windows paths differ). The `npx` form above still works as a fallback, but re-resolves the package on every launch — expect a slower cold start, and watch for `EBADENGINE` (Cursor bundles its own Node, sometimes older than the `>=22.22` this package requires) or `ENOTEMPTY` errors on repeated installs.
+**Setup**: run `npm install -g @skillsmith/mcp-server`, then run `which skillsmith-mcp` (macOS/Linux) or `where skillsmith-mcp` (Windows) and paste that path into `command` above — Cursor's bundled Node cannot resolve packages via `npx` (a real `ENOENT` on a missing `Resources/app/resources/lib` directory), so pointing directly at the installed binary is the only form confirmed to work inside Cursor. Prefer to try `npx` first anyway? Replace `command` with `"npx"` and add `"args": ["-y", "-p", "@skillsmith/mcp-server", "skillsmith-mcp"]` — simpler, but may hit the same `ENOENT`, plus `EBADENGINE` or `ENOTEMPTY` on repeated installs. After saving: enable the server in Cursor's Settings → MCP panel and start a new chat — a correctly-configured entry still shows disconnected until toggled on there — then reload the window.
 
 </details>
 
@@ -245,7 +248,7 @@ Without an API key, you're limited to **10 total requests** (trial mode). With a
 | Community | 30/min | Free | Personal projects |
 | Individual | 60/min | $9.99/mo | Active developers |
 | Team | 120/min | $25/user/mo | Development teams |
-| Enterprise | 300/min | $55/user/mo | Large organizations |
+| Enterprise | 300/min | Custom (Contact Sales) | Large organizations |
 
 All tiers include:
 - Full access to skill search, details, and recommendations
@@ -283,10 +286,11 @@ All tiers include:
 | `skill_diff` | Section-level diff between skill versions | Individual+ |
 | `skill_pack_audit` | Audit all skills in a directory | Individual+ |
 | `skill_audit` | Check skills for security advisories | Team+ |
-| `skill_inventory_audit` | Audit local `~/.claude/` inventory for namespace collisions; returns rename + edit suggestions | Team+ |
-| `apply_namespace_rename` | Apply a rename suggestion from an inventory audit (`apply`/`custom`/`skip`) | Team+ |
+| `skill_inventory_audit` | Audit every installed AI coding client's skill inventory for local namespace collisions; returns rename + edit suggestions | Team+ |
+| `apply_namespace_rename` | Apply a rename suggestion from an inventory audit (`apply`/`custom`/`skip`/`revert`) | Team+ |
 | `apply_recommended_edit` | Apply a recommended prose edit from an inventory audit (gated on APPLY_TEMPLATE_REGISTRY) | Team+ |
 | `undo_apply` | Session-scoped undo for the most recent apply_namespace_rename / apply_recommended_edit changeset(s), restored from the apply tool's own backup | Team+ |
+| `apply_manifest_reconcile` | Repair a corrupted or ambiguous manifest entry (`mark_local`/`relink`/`drop_entry`/`verify`/`revert`) — see `skill_outdated`'s `identity-mismatch`/`local-drift` diagnosis | Community |
 | `team_workspace` | Manage team workspaces (create, list, get, delete) | Team+ |
 | `share_skill` | Add, remove, or list skills in a team workspace | Team+ |
 | `publish_private` | Mark a skill as private to your team | Team+ |
@@ -454,7 +458,7 @@ Index local skills from `~/.claude/skills/` directory.
 
 The `webhook_configure` and `api_key_manage` tools hash secrets server-side via HMAC-SHA-256 before persisting to the shared `api_keys` table. The HMAC key lives in `SKILLSMITH_API_KEY_HMAC_SECRET` rather than as a hardcoded constant — defense-in-depth so a leaked DB cannot be reverse-cracked offline.
 
-**Distribution model**: identical to `SUPABASE_SERVICE_ROLE_KEY`. The same secret value must be set on every MCP host that creates or verifies Custom Integration API keys, otherwise hashes computed on host A won't match hashes verified on host B.
+**Distribution model**: a single shared secret. The same secret value must be set on every MCP host that creates or verifies Custom Integration API keys, otherwise hashes computed on host A won't match hashes verified on host B.
 
 ### Error Logging (SMI-5615)
 
@@ -511,7 +515,7 @@ before integration tools can be used. Generate one via: openssl rand -base64 48
 openssl rand -base64 48
 ```
 
-Distribute that value through the same secure channel used for `SUPABASE_SERVICE_ROLE_KEY` (e.g., 1Password vault, encrypted onboarding email). Each Team-tier admin sets it on their own MCP host alongside their other secrets:
+Distribute that value through a secure channel (e.g., 1Password vault, encrypted onboarding email). Each Team-tier admin sets it on their own MCP host alongside their other secrets — no Supabase credential of any kind is required here; the private registry and Custom Integration tools authenticate as the signed-in user (`skillsmith login`) plus your personal/team key, never a shared database credential:
 
 ```jsonc
 // ~/.claude/settings.json
@@ -523,7 +527,6 @@ Distribute that value through the same secure channel used for `SUPABASE_SERVICE
       "env": {
         "SKILLSMITH_API_KEY": "sk_live_your_personal_key",
         "SKILLSMITH_LICENSE_KEY": "sklic_your_team_license",
-        "SUPABASE_SERVICE_ROLE_KEY": "eyJ...your_service_role_jwt",
         "SKILLSMITH_API_KEY_HMAC_SECRET": "<the shared 32+ char secret>"
       }
     }

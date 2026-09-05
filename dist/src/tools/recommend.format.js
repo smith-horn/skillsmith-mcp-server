@@ -9,6 +9,7 @@
  */
 import { getRecommendAutoDetectedFooterText } from '@skillsmith/core';
 import { getTrustBadge } from '../utils/validation.js';
+import { formatScanCoverageCaveat } from './scan-coverage.format.js';
 /**
  * Merge and deduplicate API and local skill recommendations.
  * API results take priority over local results with the same name.
@@ -107,6 +108,11 @@ export function formatRecommendations(response) {
                         ? 'FAIL (' + (rec.security.riskScore ?? '?') + '/100)'
                         : 'Scanned, no verdict yet';
                 lines.push(`   Security: ${securityStatus}`);
+                // SMI-6033 Wave 2 (Gap 8): informational only — doesn't affect Security: above.
+                const scanCoverageCaveat = formatScanCoverageCaveat(rec.security.scanCoverageIncomplete, rec.security.scanCoverageNote);
+                if (scanCoverageCaveat) {
+                    lines.push(`   ${scanCoverageCaveat}`);
+                }
             }
             lines.push(`   ID: ${rec.skill_id}`);
             lines.push('');

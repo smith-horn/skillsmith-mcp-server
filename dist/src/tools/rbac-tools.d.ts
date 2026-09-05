@@ -1,197 +1,33 @@
 /**
- * @fileoverview Enterprise RBAC MCP tools for role management
+ * @fileoverview Enterprise RBAC MCP tools — fixed roles, four permissions, per-team overrides
  * @module @skillsmith/mcp-server/tools/rbac-tools
- * @see SMI-3901: RBAC MCP Tools
+ * @see SMI-3901: RBAC MCP Tools (the original shape)
+ * @see SMI-6202 Wave 1: `team_permission_grants` + the five resolver functions
+ * @see SMI-6203 Wave 2: the live service and these rewritten schemas
+ * @see SMI-5127 / SMI-6200 Wave 4 Step 0: the action-handler implementations, the
+ *      `withTelemetry`-wrapped exports, and the service singleton moved to the sibling
+ *      `rbac-tools.action.ts` (same 500-line audit:standards budget split `sso-tools.ts`
+ *      got in the same pass) — re-exported below so every existing import site (index.ts,
+ *      tool-dispatch.ts, rbac-tools.test.ts, rbac-tools.live.test.ts) reaches them
+ *      unchanged. This file now holds only the MCP tool registration / JSON schema
+ *      re-exports and the public re-export surface.
  *
- * RBAC enforcement is at the Supabase API layer (server-side), NOT local MCP.
- * These MCP tools are a management interface only — they configure roles,
- * assignments, and policies that the server enforces.
+ * RBAC enforcement is in the database, not here. `has_team_permission()` composes owner-exemption,
+ * per-team `allow`/`deny` grants and the built-in default matrix, and every function these tools
+ * call re-checks it server-side. This layer is a management interface: it resolves the team, hands
+ * the caller's own JWT to the right function, and renders the result.
  *
- * Default role hierarchy: admin > manager > member > viewer.
+ * TWO GATES, TWO QUESTIONS. The Enterprise tier gate (`toolFeatureMapping.ts`, unchanged) answers
+ * "is this customer entitled to RBAC?". The `team:manage_rbac` permission answers "is this
+ * particular person allowed to use it?". Neither replaces the other, and no new feature flag is
+ * added for the second — issued Enterprise licenses carry a frozen `features` array, so a new flag
+ * would deny every already-issued license (D-11 precedent).
  *
  * Tier gate: Enterprise (rbac feature flag).
  */
-import { z } from 'zod';
-import type { ToolContext } from '../context.js';
-import type { RBACService, RbacManageResult, RbacAssignRoleResult, RbacCreatePolicyResult } from './rbac-tools.types.js';
-export type { RBACRole, RBACAssignment, RBACPolicy, RBACService, RbacManageResult, RbacAssignRoleResult, RbacCreatePolicyResult, } from './rbac-tools.types.js';
-export { createStubRBACService } from './rbac-tools.types.js';
-export declare const rbacManageInputSchema: z.ZodObject<{
-    action: z.ZodEnum<["create_role", "list_roles", "delete_role", "get_role"]>;
-    name: z.ZodOptional<z.ZodString>;
-    roleId: z.ZodOptional<z.ZodString>;
-    permissions: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
-    description: z.ZodOptional<z.ZodString>;
-}, "strip", z.ZodTypeAny, {
-    action: "create_role" | "list_roles" | "delete_role" | "get_role";
-    name?: string | undefined;
-    description?: string | undefined;
-    roleId?: string | undefined;
-    permissions?: string[] | undefined;
-}, {
-    action: "create_role" | "list_roles" | "delete_role" | "get_role";
-    name?: string | undefined;
-    description?: string | undefined;
-    roleId?: string | undefined;
-    permissions?: string[] | undefined;
-}>;
-export type RbacManageInput = z.infer<typeof rbacManageInputSchema>;
-export declare const rbacAssignRoleInputSchema: z.ZodObject<{
-    action: z.ZodEnum<["assign", "revoke", "list_assignments"]>;
-    userId: z.ZodOptional<z.ZodString>;
-    roleId: z.ZodOptional<z.ZodString>;
-}, "strip", z.ZodTypeAny, {
-    action: "assign" | "revoke" | "list_assignments";
-    roleId?: string | undefined;
-    userId?: string | undefined;
-}, {
-    action: "assign" | "revoke" | "list_assignments";
-    roleId?: string | undefined;
-    userId?: string | undefined;
-}>;
-export type RbacAssignRoleInput = z.infer<typeof rbacAssignRoleInputSchema>;
-export declare const rbacCreatePolicyInputSchema: z.ZodObject<{
-    action: z.ZodEnum<["create", "list", "delete", "get"]>;
-    name: z.ZodOptional<z.ZodString>;
-    policyId: z.ZodOptional<z.ZodString>;
-    effect: z.ZodOptional<z.ZodEnum<["allow", "deny"]>>;
-    resources: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
-    actions: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
-}, "strip", z.ZodTypeAny, {
-    action: "list" | "create" | "get" | "delete";
-    name?: string | undefined;
-    policyId?: string | undefined;
-    effect?: "allow" | "deny" | undefined;
-    resources?: string[] | undefined;
-    actions?: string[] | undefined;
-}, {
-    action: "list" | "create" | "get" | "delete";
-    name?: string | undefined;
-    policyId?: string | undefined;
-    effect?: "allow" | "deny" | undefined;
-    resources?: string[] | undefined;
-    actions?: string[] | undefined;
-}>;
-export type RbacCreatePolicyInput = z.infer<typeof rbacCreatePolicyInputSchema>;
-export declare const rbacManageToolSchema: {
-    name: "rbac_manage";
-    description: string;
-    inputSchema: {
-        type: "object";
-        properties: {
-            action: {
-                type: string;
-                enum: string[];
-                description: string;
-            };
-            name: {
-                type: string;
-                description: string;
-            };
-            roleId: {
-                type: string;
-                description: string;
-            };
-            permissions: {
-                type: string;
-                items: {
-                    type: string;
-                };
-                description: string;
-            };
-            description: {
-                type: string;
-                description: string;
-            };
-        };
-        required: string[];
-    };
-};
-export declare const rbacAssignRoleToolSchema: {
-    name: "rbac_assign_role";
-    description: string;
-    inputSchema: {
-        type: "object";
-        properties: {
-            action: {
-                type: string;
-                enum: string[];
-                description: string;
-            };
-            userId: {
-                type: string;
-                description: string;
-            };
-            roleId: {
-                type: string;
-                description: string;
-            };
-        };
-        required: string[];
-    };
-};
-export declare const rbacCreatePolicyToolSchema: {
-    name: "rbac_create_policy";
-    description: string;
-    inputSchema: {
-        type: "object";
-        properties: {
-            action: {
-                type: string;
-                enum: string[];
-                description: string;
-            };
-            name: {
-                type: string;
-                description: string;
-            };
-            policyId: {
-                type: string;
-                description: string;
-            };
-            effect: {
-                type: string;
-                enum: string[];
-                description: string;
-            };
-            resources: {
-                type: string;
-                items: {
-                    type: string;
-                };
-                description: string;
-            };
-            actions: {
-                type: string;
-                items: {
-                    type: string;
-                };
-                description: string;
-            };
-        };
-        required: string[];
-    };
-};
-/** Replace the RBAC service implementation (for testing or production swap) */
-export declare function setRBACService(svc: RBACService): void;
-export declare const executeRbacManage: (input: {
-    action: "create_role" | "list_roles" | "delete_role" | "get_role";
-    name?: string | undefined;
-    description?: string | undefined;
-    roleId?: string | undefined;
-    permissions?: string[] | undefined;
-}, _context: ToolContext) => Promise<RbacManageResult>;
-export declare const executeRbacAssignRole: (input: {
-    action: "assign" | "revoke" | "list_assignments";
-    roleId?: string | undefined;
-    userId?: string | undefined;
-}, _context: ToolContext) => Promise<RbacAssignRoleResult>;
-export declare const executeRbacCreatePolicy: (input: {
-    action: "list" | "create" | "get" | "delete";
-    name?: string | undefined;
-    policyId?: string | undefined;
-    effect?: "allow" | "deny" | undefined;
-    resources?: string[] | undefined;
-    actions?: string[] | undefined;
-}, _context: ToolContext) => Promise<RbacCreatePolicyResult>;
+export type { EffectivePermission, GrantableRole, PermissionEffect, PermissionSource, RBACService, RbacAssignRoleResult, RbacCreatePolicyPermissionOutcome, RbacCreatePolicyResult, RbacManageResult, RbacToolError, RolePermissionsView, TeamMemberAssignment, TeamMemberRole, TeamPermission, } from './rbac-tools.types.js';
+export { DEFAULT_ROLE_PERMISSIONS } from './rbac-tools.types.js';
+export { createStubRBACService } from './rbac-tools.stub.js';
+export { rbacManageInputSchema, rbacAssignRoleInputSchema, rbacCreatePolicyInputSchema, rbacManageToolSchema, rbacAssignRoleToolSchema, rbacCreatePolicyToolSchema, type RbacManageInput, type RbacAssignRoleInput, type RbacCreatePolicyInput, } from './rbac-tools.schemas.js';
+export { setRBACService, getRBACService, executeRbacManage, executeRbacAssignRole, executeRbacCreatePolicy, } from './rbac-tools.action.js';
 //# sourceMappingURL=rbac-tools.d.ts.map

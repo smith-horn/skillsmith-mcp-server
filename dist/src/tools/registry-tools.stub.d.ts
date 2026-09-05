@@ -79,6 +79,15 @@ export interface StubActor {
     id: string | null;
     /** Simulated `user_admin_team_ids()` membership (`role IN ('admin','owner')`) — D-5 step 3. */
     isAdmin: boolean;
+    /**
+     * SMI-6202 Wave 1 widened the real gate from `user_admin_team_ids()` to
+     * `has_team_permission(teamId, 'registry:approve')`, which ALSO returns true for a non-admin
+     * member holding an explicit `team_permission_grants` allow row for that permission. This
+     * simulates exactly that case — a member who is NOT `isAdmin` but has been individually
+     * granted `registry:approve`. Defaults to `false` so every pre-existing test that never sets it
+     * keeps the pre-widening (admin-only) behavior unless it opts in.
+     */
+    hasRegistryApproveGrant?: boolean;
 }
 /**
  * `PrivateRegistryService` plus the stub-only `setActor()` identity seam. NOT part of the shared

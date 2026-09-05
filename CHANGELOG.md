@@ -4,6 +4,294 @@ All notable changes to `@skillsmith/mcp-server` are documented here.
 
 ## [Unreleased]
 
+## v0.7.13
+
+- **Feature**: SMI-6343 Wave 4 -- apply_manifest_reconcile tool (#2715)
+- **Other**: SMI-6362: Wire Team/Enterprise analytics tools to cloud-aggregated MCP tool-call data (#2698)
+- **Feature**: SMI-6343 Wave 3 -- tamper-check classification (#2710)
+- **Added**: `apply_manifest_reconcile` — a new Community-tier MCP tool that repairs a corrupted or
+  ambiguous `~/.skillsmith/manifest.json` entry through a supported path instead of a hand-edit
+  (SMI-6343 Wave 4, ADR-144 §6 / ADR-145). Five actions: `mark_local` (clears registry tracking —
+  writes `source: 'unknown'` + `provenance: 'local'` atomically, per ADR-145 §2), `relink` (sets an
+  explicit, registry-validated `id`/`source` pair, never inferring an identity), `drop_entry`
+  (hard-removes an entry whose `installPath` no longer resolves), `verify` (re-checks one entry or,
+  by default, every entry against the registry's current content hash, writing `verifiedAt` only on
+  a match — the writer ADR-144 §6's blanket trust-downgrade needs to promote an entry back to E1
+  eligibility), and `revert` (a durable, cross-session undo of a prior reconcile action on ONE
+  entry, backed by a new `~/.skillsmith/manifest-reconcile-ledger.json` ledger and
+  `ManifestManager.updateSafely()`'s locked, single-key merge — survives an unrelated skill install
+  happening in between, unlike `undo_apply`, which was evaluated and rejected as the undo mechanism
+  here: session-scoped/in-process, a whole-file hash guard hostile to the manifest's seven
+  independent writers, and an unlocked restore path). The backup step uses `createProseBackup`
+  (single-file copy), never `createSkillBackup` (recursive directory copy that could otherwise leak
+  `~/.skillsmith/config.json`'s live API key into the backups tree if ever pointed at the wrong
+  path) — guarded by a `stat().isFile()` precondition before every backup. New
+  `packages/mcp-server/src/tools/apply-manifest-reconcile.ts` (+`.types.ts`, `.helpers.ts`,
+  `.actions.ts`, `.errors.ts`) and `manifest-reconcile-ledger.ts` (+`.types.ts`).
+- **Added**: `team_analytics_dashboard`, `team_usage_report`, `analytics_dashboard`, and
+  `usage_report` now read from cloud-aggregated MCP tool-call data (`search_metrics`) instead of
+  the stub/local-only implementation (SMI-6362 Wave 1). `analytics.supabase.service.ts` gained
+  the Supabase-backed query paths, split out into `analytics.supabase.service.helpers.ts`; the
+  new `analytics.actions.ts` holds the `withTelemetry`-wrapped action handlers so `analytics.ts`
+  stays under the 500-line gate (see CLAUDE.md's CI Health Requirements). Bucket-aware
+  consent-coverage suppression (`k`-anonymity floor of 5, three levels —
+  `full`/`aggregate`/`qualitative`) protects any bucket without enough consenting members before
+  a result is returned. `middleware/telemetry-consent.ts` and `context.async.ts` gained the
+  server-verified team/user identity resolution this depends on (`resolve_telemetry_identity`,
+  never trusting a client-supplied `team_id`).
+- **Added**: `skill_outdated` now runs a three-signal tamper-check classification on every
+  entry that differs from the registry, widening `status` from `current`/`outdated`/`unknown`
+  to a five-state result: `local-drift` (a benign local edit, excluded from bulk update) and
+  `identity-mismatch` (the recorded id/source/content contradicts what's on disk — e.g. a
+  corrupted manifest entry pointing at an unrelated skill) alongside the existing three states
+  (SMI-6343 Wave 3). Adds a structured `diagnosis` field (`state`, `signal`,
+  `inconclusiveReason`, `summary`, `remediation`, `safeToBulkUpdate`) as the tool's full
+  user-facing surface — `skill_outdated` has no renderer anywhere in this repo, so this JSON
+  response IS the UX. `OutdatedSummary` gains `local_drift`/`identity_mismatch` counts.
+- **Fix**: `skill_outdated` and `skill_updates` now compare real content hashes instead of a
+  structurally meaningless proxy comparison (SMI-6343 Wave 2). `skill_outdated` gains a live
+  registry lookup arm (via `lookupSkillFromRegistry()`) with full offline/network-error/
+  monthly-quota degradation handling — it never fails the call, degrading affected rows to
+  `unknown` instead — and fixes a `latest_hash` echo bug where an unchecked skill's hash
+  visually read as "in sync". `skill_updates` now compares the manifest's own recorded
+  installed hash (not `skill_versions`' oldest row, which was never actually tied to an
+  install event) against the current registry hash.
+- **Fix**: `install.helpers.manifest.ts`'s `saveManifest()`/`acquireManifestLock()` — a
+  second, complete manifest write stack parallel to `@skillsmith/core`'s `ManifestManager`,
+  homedir-derived with no path-override parameter — now refuse to touch a manifest inside the
+  real user home while running under vitest, via `@skillsmith/core`'s newly-exported
+  `assertNotRealUserHome()` (SMI-6343 Wave 1 follow-up, adversarial review). Previously the
+  test-run `$HOME` sandbox was this write path's only protection.
+- **Breaking / Security fix**: `team_workspace`/`share_skill` no longer run on the Supabase
+  service-role client, which bypassed Row Level Security entirely and let any team member create
+  or delete a workspace — an action always intended to be admin-only (SMI-6113, live
+  privilege-escalation bug). All 8 methods now run on the caller's own signed-in-user JWT,
+  authorized via `workspace:manage` (create/delete) or plain team membership (the other 6
+  methods) — the two new RLS-backed permissions SMI-6241 also adds. **Every `team_workspace`/
+  `share_skill` call, including previously-unauthenticated reads, now requires `skillsmith login`
+  on the MCP host** — a hard prerequisite change for any existing Team-tier install that had only
+  `SUPABASE_SERVICE_ROLE_KEY` configured and no signed-in user.
+- **Fix**: the bundled `varlock` skill asset (`packages/mcp-server/src/assets/skills/varlock/SKILL.md`) — shipped to every customer who installs it via Skillsmith — carried stale security guidance dated December 22, 2025: a "never do this" list naming only `cat`, `echo $VAR`, `printenv | grep`, and `cat .env | grep SECRET`, plus unqualified `varlock load` recommendations blessed as safe. Corrected as a customer-visible correction to shipped security guidance: the never-do list now also names a direct `grep <pattern> .env`, `head`, `tail`, `sed`, `awk`, `strings`, inline interpreters (e.g. `python3 -c`), and a `docker exec` wrapper around any of the above (this repo's dev container bind-mounts the repo root at `/app`, so `docker exec <container> cat /app/.env` reaches the identical file); every `varlock load` recommendation in the file is now qualified — only the default pretty format redacts, while `--format json`, `--format json-full`, `--format json-full-compact`, and `--format env` all print unmasked, raw values (SMI-6361, varlock secret-exposure defense-in-depth Wave 1).
+- **Fix**: `set_team_role_permission()` closed a delegation hole where a team owner could grant
+  `team:manage_rbac`/`team:manage_sso` to a non-owner role, reaching the exact escalated state
+  the owner-only gate existed to prevent (SMI-6319). Two new defense layers: a table CHECK
+  constraint and a typed function-level refusal, surfaced through `rbac_manage`'s error mapping
+  so a customer sees an authored refusal rather than a raw database error.
+- **Feature**: `install_skill`/`uninstall_skill` gain `scope`/`client`/`cwd` input parameters
+  (ADR-139, SMI-6274 Wave 4) — `install_skill` previously called `getInstallPath()` directly,
+  the old global-only resolution, so the MCP server could never reach a workspace-scoped
+  install regardless of `SKILLSMITH_SCOPE`, contradicting the ADR's stated requirement that
+  the MCP server reach the identical scope resolution the CLI already has. Both tools now
+  route through `resolveScopedSkillsDir()`, with the same 5-rank precedence the CLI's
+  `--scope` flag uses; `SKILLSMITH_SCOPE` remains available for callers that can only set
+  process env, but a per-call `scope` parameter is also exposed since this is a long-running
+  server process where one env var can't express "this install workspace-scoped, that one
+  global" within a single session. `uninstall_skill` additionally gained `client` (it could
+  previously only ever target the canonical client's global directory). The MCP-only conflict
+  pre-flight check (`conflictAction`'s entire effect — `SkillInstallationService.install()`
+  itself never reads that option) now reads the scope-resolved manifest (`loadManifest()`
+  gained an optional `manifestPath` argument) instead of always the global one, so it works
+  correctly for both scopes rather than being gated to global only. `uninstall_skill`'s
+  `--also-link` fan-out cleanup (`removeLinks()`) is now gated to `client === CANONICAL_CLIENT`,
+  matching the CLI's own `remove` command guard — that mechanism has no scope or per-destination
+  client awareness, so calling it unconditionally could delete an unrelated canonical install's
+  fan-out links whenever a non-canonical-client copy of the same-named skill is uninstalled.
+- **Feature**: SMI-6205 Wave 4 SSO member lifecycle — JIT team provisioning on login,
+  seat-limit enforcement, and license-key binding/expiry tied to SSO login freshness, plus
+  dual-consent identity linking between a JIT-provisioned SSO account and a pre-existing
+  account sharing the same verified email (with a self-service decline/reversal path). No new
+  MCP tool surface — this is the underlying `record_sso_login`/`link_sso_account` SQL and
+  website flow, not a change to `configure_sso`'s own tool schema.
+- **Refactor**: split `rbac-tools.ts`/`sso-tools.ts` into thin re-export modules plus new
+  `rbac-tools.action.ts`/`sso-tools.action.ts` siblings holding the action-handler
+  implementations, `withTelemetry`-wrapped exports, and each service singleton (SMI-5127
+  convention, same split `local-inventory.helpers.ts` got below). Every existing import site
+  (`index.ts`, `tool-dispatch.ts`, all `*.test.ts` files) reaches the same exports unchanged.
+- **Fix**: `rbac_create_policy`'s `create`/`delete` actions now report per-permission
+  success/failure (`partialResults`) instead of a bare `success:false` when a multi-permission
+  batch write partially fails — a caller can now tell exactly which permissions in the batch
+  actually landed. Found and fixed during SMI-6267's synthetic RBAC UAT testing.
+- **Refactor**: split the path-traversal/symlink-escape guards (`joinPath`, `isSafePathComponent`,
+  `isWithinRoot`) out of `local-inventory.helpers.ts` into a new sibling file,
+  `local-inventory.path-safety.helpers.ts`, to bring the original file back under the 500-line CI
+  cap (it had drifted to 516 lines). Re-exported from the original module so the one consumer
+  (`local-inventory.ts`) needs no changes. No behavior change (SMI-6229 follow-up).
+- **Feature**: `configure_sso` is now backed by a real Supabase-backed SSO service
+  (`sso-tools.live.ts`), calling the new `team-sso-manage` gateway-verified edge function instead
+  of the in-memory stub. `set`/`get`/`test`/`remove` configure and query a real GoTrue SAML
+  provider registration; `set`/`remove` are gated on the `team:manage_sso` permission (owner-only
+  by default, per SMI-6242) resolved as the caller. `configure_sso` gains two new actions,
+  `claim_domain`/`verify_domain`, for proving control of a domain via DNS TXT record before it can
+  be attached to an SSO configuration — a domain must be verified before `set` will register a
+  provider against it. `test` is now a real round-trip to GoTrue rather than a simulated response;
+  the existing `simulated?: boolean` field stays in the type and is simply absent on the live path.
+  A daily `sso-domain-reverify` job re-checks each claimed domain's DNS record and disables the
+  live IdP registration after repeated verification failures (SMI-6204).
+
+## v0.7.12
+
+- **Feature**: live RBAC service, grant-write RPCs, permission-gated website UI (SMI-6203) (#2586)
+- **Feature**: add team_permission_grants RBAC schema + widen approval-gate RLS seam (SMI-6202) (#2577)
+- **Feature**: `rbac_manage`/`rbac_assign_role`/`rbac_create_policy` are now backed by a real
+  Supabase RBACService (`rbac-tools.live.ts`) instead of the in-memory stub, on the caller's own
+  signed-in JWT — never the shared team license key or service-role. `list_roles`/`get_role` now
+  return the real two-role (`admin`/`member`) / four-permission model with per-team `allow`/`deny`
+  overrides, replacing the old arbitrary custom-role shape that never matched the database.
+  `rbac_assign_role` takes `memberId` (the team-membership row id) instead of `userId`/`roleId`.
+  Every write is gated on the `team:manage_rbac` permission, resolved server-side — a denial
+  returns a structured `{ code: 'permission_denied', permission, message }` object instead of a
+  raw error string, so the CLI and website can render the reason without parsing prose (SMI-6203).
+- **Fix**: `skill_inventory_audit` never scanned Claude Code plugin-installed skills
+  (`~/.claude/plugins/cache/**`, gated on `enabledPlugins`) or a project's own
+  project-relative `.claude/skills/` mount-point — two real blind spots that let a
+  collision between a vendor plugin's skill and a project's own skill go undetected on
+  both sides. Adds Source 5 (plugin scan) and Source 6 (project scan) to the scanner,
+  tagging entries with a new `origin: 'native-client' | 'plugin' | 'project'` field
+  rather than widening the closed `ClientId` union. Both new sources guard against
+  path-traversal and symlink-escape reading outside their intended root
+  (SMI-6228/SMI-6240).
+- **Docs**: `readEnabledPluginIds` in `local-inventory.helpers.ts` now cross-references its build-free
+  `.mjs` twin (`scripts/lib/mcp-command-guard.plugin-scan.mjs`) and the parity test enforcing
+  agreement between them, per ADR-137's requirement that cross-runtime duplication of
+  security-relevant logic name the divergence risk explicitly (SMI-6229).
+- **Fix**: `rbac_manage`/`rbac_assign_role`/`rbac_create_policy`, `configure_sso`/`sso_settings`,
+  `webhook_configure`/`api_key_manage`, and `compliance_report` reported `dataSource: 'live'`
+  whenever Supabase env vars were configured, even when the underlying service was still the
+  in-memory stub (RBAC and SSO have no live implementation at all today). `dataSource` now
+  reflects which service is actually wired in. The SSO stub's connection-test action also
+  returned a fabricated real-looking success — it now carries `simulated: true` and says so
+  explicitly (SMI-6184).
+- **Docs**: site-wide positioning reframe (SMI-6194) — every tool description's branding clause
+  ("Skillsmith is the canonical lifecycle manager for agent skills...") replaced with a plain
+  descriptive sentence ("...a registry for sharing, scanning, and tracking agent skills...")
+  across all 7 tool description files plus the bundled `SKILL.md` frontmatter, to avoid
+  degrading LLM tool-routing with marketing copy. Same swap applied to the README's framing
+  sentence, `server.json`'s registry-listing description (kept under its 100-char limit), and
+  the `package.json` keywords array (`"lifecycle"` removed, `"shared-skills"`/`"governance"`
+  added). Wording-only, no behavior change.
+
+## v0.7.11
+
+- **Fix**: 0.7.10 was uninstallable — `npx @skillsmith/mcp-server@latest --version` threw
+  `SyntaxError: The requested module '@skillsmith/core' does not provide an export named
+  'SessionTierAuthError'`. Root cause: 0.7.10's source imported `getApiBaseUrl`,
+  `resolveSessionTier`, `SessionTierAuthError`, and `SessionTierTransientError` from
+  `@skillsmith/core`, but core's published version was never bumped past 0.11.7 — the release
+  that predates those exports. This package's `@skillsmith/core` dependency floor is corrected to
+  `^0.12.0`, the first core release that actually contains them (SMI-6143).
+
+## v0.7.10
+
+- **Fix**: remove SUPABASE_SERVICE_ROLE_KEY from registry install path (#2494)
+- **Fix**: remove SUPABASE_SERVICE_ROLE_KEY from customer-facing private registry reads (#2472)
+- **Security**: `private_registry_manage`'s `list`, `get`, and `namespace` actions no longer
+  require `SUPABASE_SERVICE_ROLE_KEY` on the MCP host. They previously ran on the Supabase
+  service-role client — the backend's most powerful credential, which bypasses row-level security
+  entirely — and this package's own README instructed customers to configure it on their own
+  machines and distribute it via 1Password. Both the code path and that instruction are gone.
+  The three reads now run as the signed-in user (`skillsmith login`) via new audited wrappers
+  (`registry-tools.live.member-reads.ts`), the same `getMemberUserClient()` pattern already proven
+  by `publish`/`deprecate`/`undeprecate`/`getContent`. Every existing `team_id` /
+  `approval_status = 'approved'` / `deprecated = FALSE` query predicate is preserved byte-for-byte
+  — RLS does not enforce the latter two, so dropping them would have silently widened what a
+  member can read. All three now also write a `recordRegistryAudit()` row, making a
+  license-key-team-vs-signed-in-user mismatch observable instead of invisible. `@supabase/supabase-js`
+  is now a real dependency of this package (previously only a private root devDependency, so even
+  a fully-configured install failed with "Supabase client unavailable"), and the anon-key client
+  paths fall back to the production Supabase URL/anon key when those env vars are unset — an
+  explicit override still always wins. A new `audit:standards` Check 62 fails CI if a
+  service-role dependency reappears anywhere under `packages/mcp-server/src/**` outside a named,
+  justified allowlist. `install`/`getContent`'s own remaining service-role dependency (its
+  Enterprise-entitlement check) is removed separately below. (SMI-6109)
+- **Security**: `private_registry_manage`'s `install` action (and the MCP twin of
+  `getContent()`) no longer requires `SUPABASE_SERVICE_ROLE_KEY` either — the last remaining
+  service-role dependency on this package's registry surface. The entitlement check ("does the
+  team that owns this row currently hold an active Enterprise subscription") now runs server-side
+  via a new narrowly-scoped `SECURITY DEFINER` RPC, `check_registry_team_entitlement(p_team_id)`,
+  called through the caller's own signed-in member client — no admin client exists anywhere in
+  `registry-tools.live.content.ts` anymore. Deliberately not built on the existing
+  `resolve_effective_entitlement()`: that function's personal-subscription fallback has no team
+  correlation and would let a caller with their own personal Enterprise subscription bypass the
+  entitlement check for an unrelated, non-Enterprise team they merely belong to — the new RPC has
+  no such fallback. (SMI-6111)
+- **Fix**: the license middleware never resolved a real subscription tier for a caller
+  authenticated only via `skillsmith login` (device-session, no separately-configured
+  `SKILLSMITH_API_KEY`) — SMI-1953 covered the API-key path only, so every such caller silently
+  fell back to `community` regardless of real (including team-inherited) entitlement, blocking
+  Enterprise-gated tools like `private_registry_manage`/`private_registry_publish`. New
+  `createSessionTokenResolver` (`license.tier.ts`, SMI-6098) mirrors the API-key resolver, gated
+  on a device session actually existing (a cheap local check) so a never-logged-in community user
+  is unaffected. Server-side, `license-status` now accepts the session JWT as an alternate auth
+  mode and resolves entitlement via `get_effective_subscription_summary` (SMI-6086) — the same
+  live, team-inheritance-aware RPC the website uses — with a client scoped to the caller's own
+  verified JWT, never a service-role bypass. `getExpirationWarning` moved to `license.gate.ts`
+  (500-line limit).
+- **Docs**: `private_registry_publish`'s description also qualified "your team namespace" to
+  "your team's registry namespace", closing a gap the previous SMI-6088 wording pass missed in
+  the same file. Wording-only. (SMI-6088)
+- **Docs**: `private_registry_manage`'s `namespace` action, `skill_inventory_audit`, and
+  `apply_namespace_rename` tool descriptions now disambiguate the three previously-conflated
+  meanings of "namespace" — the private registry's per-team publish prefix vs. the local
+  single-machine naming-collision audit vs. the public registry's author-prefix convention.
+  Wording-only; no identifier, RPC, column, or error code renamed. (SMI-6088)
+- **Fix**: the upgrade-nudge message shown to a non-Enterprise user hitting a gated feature
+  (`getTierComparisonMessage`, `middleware/degradation.ts`) hardcoded the literal unpublished
+  Enterprise price (`$55/user/month`) — told a prospect the number before they ever talk to
+  sales, contradicting CLAUDE.md's "Custom (unpublished, 'Contact Sales')" pricing policy. Now
+  `Custom pricing — Contact Sales` (SMI-6069, GH#2368-adjacent follow-up from SMI-5893)
+- **Fix**: `skill_inventory_audit` scanned only `~/.claude/` — its description said so accurately,
+  but the underlying scope was too narrow. Now loops every supported client's native skills
+  directory (`CLIENT_NATIVE_PATHS`, the same source of truth `install_skill --client` already
+  uses) via `local-inventory.ts`'s `scanSkills`, unconditionally per call rather than pre-detecting
+  installed clients (matching `inventory_push`'s existing `collectDeviceSkills()` precedent).
+  Commands/agents/CLAUDE.md trigger-phrase scanning stays Claude Code-only — no other client has
+  an equivalent construct. Tool description updated to match (GH#2368 C-12, SMI-6077)
+- **Fix**: `private_registry_publish`/`private_registry_manage` couldn't resolve a team from a
+  complimentary-granted (`admin-grant-subscription`) `SKILLSMITH_API_KEY` — team resolution now
+  falls back to it when `SKILLSMITH_LICENSE_KEY` is unset (`SKILLSMITH_LICENSE_KEY` still wins
+  when both are set). Both credentials hash into the identical `license_keys.key_hash` lookup, so
+  this isn't a broadened attack surface — just a missing fallback. (SMI-6080)
+- **Feature**: `get_skill`, `search`, and `skill_recommend` now surface a partial-scan caveat
+  ("Note: partial scan — some files could not be analyzed (...)") when the registry's extended
+  operational-code scan (SMI-6033 Wave 2, Gap 8) couldn't cover every candidate file for a skill.
+  Informational only — never affects installability or the `Security:`/`Installable:` verdict
+  lines above it. Shared rendering (`scan-coverage.format.ts`) translates the machine-readable
+  cause token(s) persisted on the row (`scan_coverage_note`) into a human-readable phrase, so the
+  three surfaces cannot drift in wording.
+- **Fix**: `formatAuthenticationError`'s 401 message corrected a stale `1,000 requests/month`
+  to the actual `100`, and replaced a Claude-Code-specific "Add to your Claude settings"
+  instruction with a client-neutral pointer at the docs URL already passed to the formatter
+  (SMI-5893 Wave 11, GH#2368 C-19)
+- **Fix**: two bundled SKILL.md pricing/quota tables corrected — the `skills/skillsmith`
+  copy's whole pricing table was off by 10x (Community showed 1,000 instead of 100,
+  Individual 10,000 instead of 1,000, Team 100,000 instead of 10,000) and its Enterprise
+  row exposed a specific price (`$55/user/mo`) that's deliberately unpublished
+  (Contact Sales) — now `Custom (Contact Sales)`. The `agent-pack` copy's quota-forecast
+  guidance had the same Community/Individual numbers swapped-and-scaled — also fixed at
+  its actual source (`@skillsmith/core`'s `prompt-source.ts`, which generates this copy
+  and had drifted from it), so the byte-identical drift-gate test stays green. Also
+  corrected: `skill_suggest`'s tool description (`Community: 1,000/mo` → `100/mo`), the
+  `LicenseTier` TSDoc in `middleware/license.ts` (same 10x error plus the same unpublished
+  Enterprise price), and the equivalent Cursor `npx`/pricing text in both this package's
+  and the root repo's README.md (SMI-5893 Wave 11, GH#2368 C-19)
+- **Fix**: the auto-update-available notification now resolves `SKILLSMITH_CLIENT` via
+  `@skillsmith/core`'s new `resolveUpdateNotificationClient()` instead of the throwing
+  `resolveClientId` — the notification is built inside a `.then()` whose trailing `.catch()` is
+  empty, so an invalid env value previously threw and silently dropped the entire notification
+  rather than degrading to the generic message (SMI-5893 Wave 10, GH#2368 C-06/C-07/C-22)
+- **Feature**: `skill_validate` now runs the existing (previously unwired) typosquat-name
+  detector, checking a candidate skill's name against a bundled, periodically-regenerated
+  reference-list snapshot of high-trust authors and top-starred skills. Warn-tier only — this
+  check cannot block validation on its own (SMI-6033 Wave 1)
+- **Fix**: `ZERO_BREAKDOWN` test fixtures in `src/audit` (and the mirrored copy in
+  `@skillsmith/cli`) predated SMI-6033 Wave 3's four new `RiskScoreBreakdown` fields
+  (`gatekeeperBypass`, `archiveEvasion`, `pasteHostFetch`, `encodedPayload`) — a real,
+  pre-existing typecheck gap only a genuinely full, cross-package `tsc --build` surfaces, not a
+  scoped single-package run (SMI-6033 Wave 3)
+- **Fix**: `ZERO_BREAKDOWN` test fixtures in `src/audit` predated SMI-6033 Wave 4's new
+  `decoyMisdirection` `RiskScoreBreakdown` field — the same class of gap as above, only a
+  genuinely full cross-package `tsc --build` surfaces it (SMI-6033 Wave 4)
+
 ## v0.7.9
 
 - **Fix**: Cursor UAT follow-up — website onboarding, CLI/MCP parity, hooks schema (#2375)

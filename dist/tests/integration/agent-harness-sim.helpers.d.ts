@@ -56,6 +56,18 @@ export declare function createIsolatedHome(prefix: string): {
  * this is the consent-off/no-network-telemetry default every real install
  * starts from, and it is what lets the consent-gating assertions run fully
  * offline (see the file header of `agent-harness-sim.test.ts`).
+ *
+ * `SKILLSMITH_SKIP_SKILL_INSTALL` only silences the BUNDLED first-run
+ * install; the separate Tier-1 REGISTRY auto-install/self-heal path
+ * (`onboarding/tier1-self-heal.ts`, installing real `getsentry/*` skills) has
+ * its own kill switch, `SKILLSMITH_TIER1_AUTOINSTALL_DISABLE`, which this
+ * previously omitted — harmless while `getInstallPath()` was purely
+ * `homedir()`-based (so it landed inside this isolated `homeDir`), but ADR-139
+ * moved the resolver to `resolveScopedSkillsDir()`, whose auto-detect walks
+ * ancestors from the spawned process's `cwd` (unset here, so it inherited the
+ * real repo root) before falling back to global — reliably installing real
+ * `getsentry/skill-writer`/`getsentry/commit` skills into this worktree's own
+ * tracked `.claude/skills` submodule on every run. Both switches are now set.
  */
 export declare function baseSpawnEnv(homeDir: string): Record<string, string>;
 /**

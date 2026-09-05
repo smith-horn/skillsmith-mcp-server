@@ -5,31 +5,9 @@
 import type { ToolContext } from '../context.js';
 import { parseRepoUrl, type ParsedRepoUrl } from '@skillsmith/core';
 import { type ClientId } from '@skillsmith/core/install';
-import { type SkillManifest, type ParsedSkillId, type RegistrySkillInfo } from './install.types.js';
+import { type ParsedSkillId, type RegistrySkillInfo } from './install.types.js';
 export { parseRepoUrl, type ParsedRepoUrl };
-/**
- * Acquire a file lock for manifest operations
- * SMI-1533: Prevents race conditions during concurrent installs
- */
-export declare function acquireManifestLock(): Promise<void>;
-/**
- * Release the manifest lock
- */
-export declare function releaseManifestLock(): Promise<void>;
-/**
- * Load or create manifest
- */
-export declare function loadManifest(): Promise<SkillManifest>;
-/**
- * Save manifest
- * SMI-1533: Uses atomic write pattern with lock
- */
-export declare function saveManifest(manifest: SkillManifest): Promise<void>;
-/**
- * SMI-1533: Safely update manifest with locking
- * Prevents race conditions during concurrent install operations
- */
-export declare function updateManifestSafely(updateFn: (manifest: SkillManifest) => SkillManifest): Promise<void>;
+export { acquireManifestLock, releaseManifestLock, loadManifest, saveManifest, updateManifestSafely, } from './install.helpers.manifest.js';
 /**
  * Parse skill ID or URL to get components
  * SMI-1491: Added isRegistryId flag to detect registry skill IDs vs direct GitHub URLs
@@ -50,7 +28,42 @@ export declare function parseSkillId(input: string): ParsedSkillId;
  * branch, which the shared resolver has no concept of — any future
  * consolidation must preserve that gate on both branches (cf. SMI-5447).
  */
-export declare function lookupSkillFromRegistry(skillId: string, context: ToolContext): Promise<RegistrySkillInfo | null>;
+export declare function lookupSkillFromRegistry(skillId: string, context: ToolContext, options?: {
+    /**
+     * SMI-6343: invoked when the live call failed specifically because the
+     * caller's monthly API quota is exhausted (`ErrorCodes.NETWORK_QUOTA_
+     * EXCEEDED`, thrown by `SkillsmithApiClient`'s retry loop on a
+     * `monthly_quota_exceeded` 429 body) — lets a batch caller (e.g.
+     * `skill_outdated`'s live registry arm) stop issuing further live calls
+     * for the rest of its run instead of burning one failed call per
+     * remaining skill. The `error` argument is the caught `SkillsmithError`
+     * itself — its `.message` already carries the used/limit/tier and the
+     * formatted reset-time text (`client.ts`'s quota-error construction),
+     * so a caller building a user-facing diagnosis should read `.message`
+     * rather than re-deriving reset time from `.details.resetsAt`. Purely
+     * additive: this function's existing
+     * swallow-every-other-error-and-fall-back-to-local-DB behavior is
+     * unchanged, and every existing caller that doesn't pass `options` sees
+     * zero behavior change.
+     */
+    onQuotaExceeded?: (error: unknown) => void;
+    /**
+     * SMI-6343 (pr-reviewer-gate fix): invoked for EVERY caught error
+     * (network error, DNS, timeout, quota exceeded — this fires in addition
+     * to, not instead of, `onQuotaExceeded` for the quota case), before
+     * falling through to the local-DB fallback. This function never
+     * rethrows — it always resolves, either to `null` or to a value from
+     * the local-DB fallback (which itself never carries a `contentHash`) —
+     * so a caller that needs to know "the live attempt failed" cannot infer
+     * that from a thrown exception; it never occurs. Without this signal,
+     * a caller like `skill_outdated`'s live registry arm has no way to
+     * distinguish "the registry genuinely has nothing new" from "the live
+     * call broke and we silently got local-DB data (or nothing) instead" —
+     * confirmed by a pr-reviewer-gate finding that the prior fix's `try/catch`
+     * around this function's call site was dead code for this exact reason.
+     */
+    onLiveLookupFailed?: (error: unknown) => void;
+}): Promise<RegistrySkillInfo | null>;
 /**
  * SMI-3221: Detect git-crypt encrypted content fetched from GitHub.
  * raw.githubusercontent.com serves encrypted bytes for repos using git-crypt.

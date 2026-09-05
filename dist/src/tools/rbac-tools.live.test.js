@@ -1,0 +1,196 @@
+/**
+ * @fileoverview Live RBAC service — RPC wiring and refusal mapping
+ * @see SMI-6203 Wave 2: `createLiveRBACService()` (`rbac-tools.live.ts`)
+ * @see SMI-6203 security round: `rpcError()` must carry the PostgREST SQLSTATE across, or the
+ *   whole `PASSTHROUGH_REFUSALS` allowlist is unreachable in production AND a raw Postgres
+ *   `42501` (which names internal schema objects) leaks verbatim to the customer.
+ * @see SMI-6319 (`supabase/migrations/20260901000000_rbac_meta_permission_not_grantable.sql`):
+ *   adds gate 4b's two new `PASSTHROUGH_REFUSALS` entries (neither meta-permission may ever be
+ *   GRANTED to a role, by any caller including the owner). This file mocks the RPC response
+ *   directly rather than exercising the stub's own gates, so no setup step here was broken by
+ *   SMI-6319 — the only change needed is completing the `it.each` allowlist-rendering check
+ *   below to cover the 2 new strings alongside the 6 it already pinned.
+ *
+ * Split into its own file rather than appended to `rbac-tools.test.ts` — that file is a
+ * stub-mode suite and is already at its 500-line audit:standards budget. Mock style deliberately
+ * mirrors `registry-tools.live.review-rbac-widening.test.ts`'s (hoisted fake JWT, `vi.mock` of
+ * `../supabase-client.js` + `./team-resolver.js`, a local scripted client), so the two live-service
+ * suites read the same way.
+ *
+ * These are passthrough tests. The authorization decisions themselves are proven by the
+ * migration's own inline smoke block (`20260828000000_rbac_grant_writes.sql`, w0-w7); this file
+ * only confirms the TypeScript layer forwards the caller's parameters unmodified and renders
+ * whatever the database refused with, without inventing, dropping, or leaking anything.
+ */
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+const { FAKE_JWT } = vi.hoisted(() => {
+    const seg = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    const userId = '11111111-2222-3333-4444-555555555555';
+    return {
+        FAKE_JWT: `${seg({ alg: 'HS256', typ: 'JWT' })}.${seg({ sub: userId, role: 'authenticated' })}.sig`,
+    };
+});
+vi.mock('../supabase-client.js', () => ({
+    isSupabaseConfigured: vi.fn(() => true),
+    getSupabaseClient: vi.fn(),
+    getSupabaseAdminClient: vi.fn(),
+    getSupabaseUserClient: vi.fn(),
+    resetSupabaseClients: vi.fn(),
+}));
+vi.mock('./team-resolver.js', () => ({
+    readLicenseKey: vi.fn(() => 'sk_test_fake_license'),
+    resolveLicenseTeamId: vi.fn(async () => 'team-alpha'),
+    resolveUserAccessToken: vi.fn(async () => FAKE_JWT),
+}));
+import { getSupabaseUserClient } from '../supabase-client.js';
+import { executeRbacAssignRole, executeRbacManage, setRBACService } from './rbac-tools.js';
+import { createLiveRBACService } from './rbac-tools.live.js';
+import { isPermissionDeniedError, permissionErrorText } from './team-permission-error.js';
+const mockContext = {};
+const calls = [];
+/** Script the single `rpc()` the next tool call will make. */
+function respondWith(response) {
+    vi.mocked(getSupabaseUserClient).mockResolvedValue({
+        rpc: async (fn, params) => {
+            calls.push({ fn, params });
+            return response;
+        },
+        // The real client carries far more surface; RbacSupabaseClient only needs `rpc`.
+    });
+}
+describe('createLiveRBACService — refusal mapping', () => {
+    beforeEach(() => {
+        calls.length = 0;
+        setRBACService(createLiveRBACService());
+    });
+    it('forwards set_role_permission parameters to the RPC verbatim, adding nothing', async () => {
+        respondWith({ data: null, error: null });
+        const result = await executeRbacManage({
+            action: 'set_role_permission',
+            role: 'member',
+            permission: 'registry:approve',
+            effect: 'deny',
+        }, mockContext);
+        expect(result.success).toBe(true);
+        expect(result.dataSource).toBe('live');
+        expect(calls).toEqual([
+            {
+                fn: 'set_team_role_permission',
+                params: {
+                    p_team_id: 'team-alpha',
+                    p_role: 'member',
+                    p_permission: 'registry:approve',
+                    p_effect: 'deny',
+                },
+            },
+        ]);
+    });
+    it('maps the generic permission_denied refusal to the standard sentence', async () => {
+        respondWith({ data: null, error: { code: '42501', message: 'permission_denied' } });
+        const result = await executeRbacManage({ action: 'list_roles' }, mockContext);
+        expect(result.success).toBe(false);
+        expect(isPermissionDeniedError(result.error)).toBe(true);
+        expect(permissionErrorText(result.error)).toContain('team:manage_rbac');
+    });
+    it.each([
+        'Only the team owner can change who holds the "team:manage_rbac" permission.',
+        'Only the team owner can change who holds the "team:manage_sso" permission.',
+        // SMI-6319 gate 4b: neither meta-permission may ever be GRANTED to a role, by anyone
+        // including the owner — distinct from the two gate-4 refusals above, which are about who
+        // may write/clear an EXISTING grant row rather than whether the grant may exist at all.
+        'The "team:manage_rbac" permission is owner-only and cannot be granted to another role.',
+        'The "team:manage_sso" permission is owner-only and cannot be granted to another role.',
+        "Only owners and admins can widen a role's permissions. You can review permissions and " +
+            'remove grants, but not add an allow.',
+    ])('renders the authored gate-4/gate-4b/gate-5 refusal verbatim: %s', async (message) => {
+        respondWith({ data: null, error: { code: '42501', message } });
+        const result = await executeRbacManage({
+            action: 'set_role_permission',
+            role: 'admin',
+            permission: 'team:manage_sso',
+            effect: 'allow',
+        }, mockContext);
+        expect(result.success).toBe(false);
+        // Structured — a live refusal must be indistinguishable from the stub's.
+        expect(isPermissionDeniedError(result.error)).toBe(true);
+        expect(permissionErrorText(result.error)).toBe(message);
+    });
+    // `rpcError()` is applied at five call sites; the cases above only exercise two of them
+    // (`set_team_role_permission` and `get_effective_team_permissions`). This covers the RESET
+    // call site with the exact refusal the gate-4 widening created there — clearing a
+    // `team:manage_sso` row is now owner-only too — which renders as authored copy ONLY if
+    // `resetRolePermission`'s own throw carries the SQLSTATE across, not just `setRolePermission`'s.
+    it('carries the SQLSTATE across on the reset call site too, not only on set', async () => {
+        const message = 'Only the team owner can change who holds the "team:manage_sso" permission.';
+        respondWith({ data: null, error: { code: '42501', message } });
+        const result = await executeRbacManage({ action: 'reset_role_permission', role: 'admin', permission: 'team:manage_sso' }, mockContext);
+        expect(calls.map((c) => c.fn)).toEqual(['reset_team_role_permission']);
+        expect(result.success).toBe(false);
+        expect(isPermissionDeniedError(result.error)).toBe(true);
+        expect(permissionErrorText(result.error)).toBe(message);
+    });
+    // SMI-6267 UAT finding F4 (extended by SMI-6319): the it.each block above pins 5 of the 8
+    // PASSTHROUGH_REFUSALS strings (the two gate-4 meta-permission owner-only refusals, the two
+    // SMI-6319 gate-4b meta-permission non-grantable refusals, plus the no-self-widening
+    // refusal), all raised by set_team_role_permission/reset_team_role_permission and reached via
+    // executeRbacManage. The remaining 3 are set_team_member_role()'s owner-protection refusals,
+    // reached only via executeRbacAssignRole's assign/revoke actions — untested through this live
+    // array-matching path until now (the SQL-side smoke blocks — 20260828000000's T7 plus
+    // 20260901000000's own gate-4b block — already pin all 8 from the database side; this closes
+    // the matching gap in the TypeScript-side suite that actually runs in CI).
+    it.each([
+        "cannot change the team owner's role",
+        "forbidden: only the team owner can change an admin's role",
+        'forbidden: only owners and admins can promote a member to admin',
+    ])('renders the authored set_team_member_role refusal verbatim: %s', async (message) => {
+        respondWith({ data: null, error: { code: '42501', message } });
+        const result = await executeRbacAssignRole({ action: 'assign', memberId: 'member-1', role: 'admin' }, mockContext);
+        expect(calls.map((c) => c.fn)).toEqual(['set_team_member_role']);
+        expect(result.success).toBe(false);
+        // Structured — a live refusal must be indistinguishable from the stub's.
+        expect(isPermissionDeniedError(result.error)).toBe(true);
+        expect(permissionErrorText(result.error)).toBe(message);
+    });
+    it('never leaks a raw Postgres 42501 that names internal schema objects', async () => {
+        respondWith({
+            data: null,
+            error: { code: '42501', message: 'permission denied for table team_permission_grants' },
+        });
+        const result = await executeRbacManage({ action: 'list_roles' }, mockContext);
+        expect(result.success).toBe(false);
+        expect(isPermissionDeniedError(result.error)).toBe(true);
+        const text = permissionErrorText(result.error);
+        expect(text).not.toContain('team_permission_grants');
+        expect(text).toContain('team:manage_rbac');
+    });
+    it('leaves a typed 22023 input refusal as a plain string, not a permission denial', async () => {
+        respondWith({
+            data: null,
+            error: { code: '22023', message: 'effect must be allow or deny (got bogus)' },
+        });
+        const result = await executeRbacManage({
+            action: 'set_role_permission',
+            role: 'admin',
+            permission: 'registry:approve',
+            effect: 'allow',
+        }, mockContext);
+        expect(result.success).toBe(false);
+        expect(isPermissionDeniedError(result.error)).toBe(false);
+        expect(result.error).toContain('effect must be allow or deny');
+    });
+    it('does not mislabel a transport/auth outage as a permission denial', async () => {
+        respondWith({ data: null, error: { code: 'PGRST301', message: 'JWT expired' } });
+        const result = await executeRbacManage({ action: 'list_roles' }, mockContext);
+        expect(result.success).toBe(false);
+        expect(isPermissionDeniedError(result.error)).toBe(false);
+        expect(result.error).toContain('JWT expired');
+    });
+    it('treats a null reset result as an error rather than silently reporting "no override"', async () => {
+        respondWith({ data: null, error: null });
+        const result = await executeRbacManage({ action: 'reset_role_permission', role: 'admin', permission: 'registry:approve' }, mockContext);
+        expect(result.success).toBe(false);
+        expect(isPermissionDeniedError(result.error)).toBe(false);
+        expect(result.error).toContain('returned no value');
+    });
+});
+//# sourceMappingURL=rbac-tools.live.test.js.map

@@ -47,4 +47,24 @@ export declare function featuresForTier(tier: LicenseTier): FeatureFlag[];
  * @returns The `resolveTierViaApiKey(apiKey)` function.
  */
 export declare function createTierResolver(context: LicenseMiddlewareContext, cacheTtlMs: number): (apiKey: string) => Promise<LicenseInfo>;
+/**
+ * Create a tier resolver for a device-login session (SMI-6098, umbrella
+ * SMI-6085) — used only when `getApiKey()` returns nothing, i.e. the caller
+ * authenticated via `skillsmith login` with no separately-configured
+ * personal API key. SMI-1953 covered the API-key path only; without this,
+ * every device-session-only user silently resolved to community regardless
+ * of real (including team-inherited) entitlement.
+ *
+ * Shares `context`'s single cache slot with `createTierResolver` — safe
+ * because `getLicenseInfo()` tries the API-key path first and only calls
+ * this resolver when no API key is configured, so exactly one is ever
+ * active per middleware instance.
+ *
+ * The returned function NEVER throws — every path returns a `LicenseInfo`,
+ * matching `createTierResolver`'s contract.
+ *
+ * @param context - Shared middleware context (holds the cache).
+ * @param cacheTtlMs - Full TTL for DEFINITIVE results.
+ */
+export declare function createSessionTokenResolver(context: LicenseMiddlewareContext, cacheTtlMs: number): () => Promise<LicenseInfo>;
 //# sourceMappingURL=license.tier.d.ts.map

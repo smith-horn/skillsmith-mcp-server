@@ -18,7 +18,7 @@ const TIER_PRICING = {
     community: '$0/month',
     individual: '$9.99/month',
     team: '$25/user/month',
-    enterprise: '$55/user/month',
+    enterprise: 'Custom pricing — Contact Sales',
 };
 /**
  * Feature descriptions for upgrade prompts
@@ -124,7 +124,7 @@ export function getTierComparisonMessage() {
         '  - Team Workspaces',
         '  - Priority Support',
         '',
-        'Enterprise ($55/user/month)',
+        'Enterprise (Custom pricing — Contact Sales)',
         '----------------------------------------',
         '  - SSO/SAML Integration',
         '  - Role-Based Access Control',

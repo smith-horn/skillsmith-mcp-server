@@ -1,6 +1,16 @@
 /**
  * @fileoverview Tests for RBAC MCP tools
- * @see SMI-3901: RBAC MCP Tools
+ * @see SMI-3901: RBAC MCP Tools (original shape, superseded)
+ * @see SMI-6202 Wave 1 / SMI-6203 Wave 2: the real two-role / four-permission model these tests
+ *      now cover — `RolePermissionsView` / `TeamMemberAssignment` / `RbacCreatePolicyResult.grants`,
+ *      not the old `create_role`/`delete_role`/roleId/userId/policyId shapes.
+ * @see SMI-6242: the corrected default matrix (`admin` denies `team:manage_rbac`/`team:manage_sso`)
+ * @see SMI-6319 (`supabase/migrations/20260901000000_rbac_meta_permission_not_grantable.sql`):
+ *      neither meta-permission may ever be GRANTED (`effect: 'allow'`) to a role by ANY caller,
+ *      including the owner (stub gate 1b, `rbac-tools.stub.ts`'s `requireGrantWriteAuthority`).
+ *      This makes every "owner elevates a non-owner with `team:manage_rbac`" setup step used by
+ *      the old gate 4/5 tests below unconstructible — those tests are rewritten in place to
+ *      assert the new refusal directly rather than deleted; see the comments at each site.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest'
@@ -14,16 +24,21 @@ import {
   executeRbacCreatePolicy,
   createStubRBACService,
   setRBACService,
-  type RbacManageInput,
-  type RbacAssignRoleInput,
-  type RbacCreatePolicyInput,
+  DEFAULT_ROLE_PERMISSIONS,
 } from './rbac-tools.js'
+import { MANAGE_RBAC_PERMISSION } from './rbac-tools.types.js'
+import type { RBACService } from './rbac-tools.types.js'
+import { STUB_TEAM_ID, type StubRBACService } from './rbac-tools.stub.js'
+import { isPermissionDeniedError, permissionErrorText } from './team-permission-error.js'
 
 const mockContext = {} as ToolContext
 
 describe('rbac-tools', () => {
+  let stub: StubRBACService
+
   beforeEach(() => {
-    setRBACService(createStubRBACService())
+    stub = createStubRBACService()
+    setRBACService(stub)
   })
 
   // ==========================================================================
@@ -31,396 +46,700 @@ describe('rbac-tools', () => {
   // ==========================================================================
 
   describe('rbacManageInputSchema', () => {
-    it('should accept valid create_role input', () => {
-      const input = { action: 'create_role', name: 'deployer', permissions: ['deploy:*'] }
-      const parsed = rbacManageInputSchema.parse(input)
-      expect(parsed.action).toBe('create_role')
-      expect(parsed.name).toBe('deployer')
-    })
-
-    it('should accept list_roles without extra fields', () => {
+    it('accepts list_roles without extra fields', () => {
       const parsed = rbacManageInputSchema.parse({ action: 'list_roles' })
       expect(parsed.action).toBe('list_roles')
     })
 
-    it('should reject invalid action', () => {
-      expect(() => rbacManageInputSchema.parse({ action: 'invalid' })).toThrow()
+    it('accepts get_role with role', () => {
+      const parsed = rbacManageInputSchema.parse({ action: 'get_role', role: 'admin' })
+      expect(parsed.role).toBe('admin')
+    })
+
+    it('accepts set_role_permission with role/permission/effect', () => {
+      const parsed = rbacManageInputSchema.parse({
+        action: 'set_role_permission',
+        role: 'member',
+        permission: 'registry:approve',
+        effect: 'allow',
+      })
+      expect(parsed.effect).toBe('allow')
+    })
+
+    it('rejects an invalid action', () => {
+      expect(() => rbacManageInputSchema.parse({ action: 'create_role' })).toThrow()
+    })
+
+    it('rejects an invalid role', () => {
+      expect(() => rbacManageInputSchema.parse({ action: 'get_role', role: 'owner' })).toThrow()
+    })
+
+    it('rejects an invalid permission', () => {
+      expect(() =>
+        rbacManageInputSchema.parse({
+          action: 'set_role_permission',
+          role: 'admin',
+          permission: 'audit:read',
+          effect: 'allow',
+        })
+      ).toThrow()
+    })
+
+    it('rejects an invalid effect', () => {
+      expect(() =>
+        rbacManageInputSchema.parse({
+          action: 'set_role_permission',
+          role: 'admin',
+          permission: 'registry:approve',
+          effect: 'maybe',
+        })
+      ).toThrow()
     })
   })
 
   describe('rbacAssignRoleInputSchema', () => {
-    it('should accept assign action', () => {
+    it('accepts assign with memberId + role', () => {
       const parsed = rbacAssignRoleInputSchema.parse({
         action: 'assign',
-        userId: 'user_1',
-        roleId: 'role_admin',
+        memberId: 'tm_1',
+        role: 'admin',
       })
       expect(parsed.action).toBe('assign')
     })
 
-    it('should accept list_assignments', () => {
+    it('accepts list_assignments', () => {
       const parsed = rbacAssignRoleInputSchema.parse({ action: 'list_assignments' })
       expect(parsed.action).toBe('list_assignments')
     })
 
-    it('should reject invalid action', () => {
+    it('rejects an invalid action', () => {
       expect(() => rbacAssignRoleInputSchema.parse({ action: 'bad' })).toThrow()
+    })
+
+    it('rejects role="owner" (never assignable through this schema)', () => {
+      expect(() =>
+        rbacAssignRoleInputSchema.parse({ action: 'assign', memberId: 'tm_1', role: 'owner' })
+      ).toThrow()
     })
   })
 
   describe('rbacCreatePolicyInputSchema', () => {
-    it('should accept create action with all fields', () => {
+    it('accepts create with all fields', () => {
       const parsed = rbacCreatePolicyInputSchema.parse({
         action: 'create',
-        name: 'allow-read',
-        effect: 'allow',
-        resources: ['skills:*'],
-        actions: ['read'],
+        role: 'member',
+        effect: 'deny',
+        resources: ['registry'],
+        actions: ['approve'],
       })
       expect(parsed.action).toBe('create')
-      expect(parsed.effect).toBe('allow')
     })
 
-    it('should accept list action', () => {
+    it('accepts list action', () => {
       const parsed = rbacCreatePolicyInputSchema.parse({ action: 'list' })
       expect(parsed.action).toBe('list')
     })
 
-    it('should reject invalid effect', () => {
+    it('rejects an invalid effect', () => {
       expect(() =>
         rbacCreatePolicyInputSchema.parse({
           action: 'create',
-          name: 'bad',
+          role: 'admin',
           effect: 'maybe',
-          resources: ['*'],
-          actions: ['*'],
+          resources: ['registry'],
+          actions: ['approve'],
         })
       ).toThrow()
     })
   })
 
   // ==========================================================================
-  // rbac_manage handler
+  // executeRbacManage
   // ==========================================================================
 
-  describe('executeRbacManage', () => {
-    it('should create a custom role', async () => {
-      const input: RbacManageInput = {
-        action: 'create_role',
-        name: 'deployer',
-        permissions: ['deploy:*', 'skills:read'],
-        description: 'Can deploy skills',
-      }
-      const result = await executeRbacManage(input, mockContext)
-      expect(result.success).toBe(true)
-      expect(result.role).toBeDefined()
-      expect(result.role!.name).toBe('deployer')
-      expect(result.role!.permissions).toEqual(['deploy:*', 'skills:read'])
-      expect(result.message).toContain('Role Created')
-    })
-
-    it('should fail create_role without name', async () => {
-      const input: RbacManageInput = { action: 'create_role' }
-      const result = await executeRbacManage(input, mockContext)
-      expect(result.success).toBe(false)
-      expect(result.error).toContain('name is required')
-    })
-
-    it('should list default roles', async () => {
+  describe('executeRbacManage: list_roles / get_role', () => {
+    it('SMI-6242: list_roles reflects the corrected default matrix', async () => {
       const result = await executeRbacManage({ action: 'list_roles' }, mockContext)
       expect(result.success).toBe(true)
-      expect(result.roles).toBeDefined()
-      expect(result.roles!.length).toBeGreaterThanOrEqual(4)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const names = result.roles!.map((r: any) => r.name)
-      expect(names).toContain('admin')
-      expect(names).toContain('viewer')
+      expect(result.roles).toHaveLength(2)
+      expect(result.roles!.map((r) => r.role)).toEqual(['admin', 'member'])
+
+      const admin = result.roles!.find((r) => r.role === 'admin')!
+      const effectFor = (perms: typeof admin.permissions, p: string) =>
+        perms.find((x) => x.permission === p)
+      expect(effectFor(admin.permissions, 'registry:approve')).toMatchObject({
+        effect: 'allow',
+        source: 'default',
+      })
+      expect(effectFor(admin.permissions, 'registry:deprecate')).toMatchObject({
+        effect: 'allow',
+        source: 'default',
+      })
+      expect(effectFor(admin.permissions, 'team:manage_rbac')).toMatchObject({
+        effect: 'deny',
+        source: 'default',
+      })
+      expect(effectFor(admin.permissions, 'team:manage_sso')).toMatchObject({
+        effect: 'deny',
+        source: 'default',
+      })
+
+      const member = result.roles!.find((r) => r.role === 'member')!
+      expect(member.permissions.every((p) => p.effect === 'deny')).toBe(true)
     })
 
-    it('should get a role by ID', async () => {
-      const result = await executeRbacManage(
-        { action: 'get_role', roleId: 'role_admin' },
-        mockContext
-      )
+    it('DEFAULT_ROLE_PERMISSIONS constant matches the SMI-6242 fix', () => {
+      expect(DEFAULT_ROLE_PERMISSIONS.admin['registry:approve']).toBe('allow')
+      expect(DEFAULT_ROLE_PERMISSIONS.admin['registry:deprecate']).toBe('allow')
+      expect(DEFAULT_ROLE_PERMISSIONS.admin['team:manage_rbac']).toBe('deny')
+      expect(DEFAULT_ROLE_PERMISSIONS.admin['team:manage_sso']).toBe('deny')
+      expect(Object.values(DEFAULT_ROLE_PERMISSIONS.member).every((v) => v === 'deny')).toBe(true)
+    })
+
+    it('get_role returns the 4-row slice for one role', async () => {
+      const result = await executeRbacManage({ action: 'get_role', role: 'admin' }, mockContext)
       expect(result.success).toBe(true)
-      expect(result.role!.name).toBe('admin')
+      expect(result.role!.role).toBe('admin')
+      expect(result.role!.permissions).toHaveLength(4)
     })
 
-    it('should fail get_role without roleId', async () => {
+    it('fails get_role without role', async () => {
       const result = await executeRbacManage({ action: 'get_role' }, mockContext)
       expect(result.success).toBe(false)
-      expect(result.error).toContain('roleId is required')
+      expect(result.error).toBe('role is required for action "get_role".')
     })
+  })
 
-    it('should fail get_role for nonexistent role', async () => {
-      const result = await executeRbacManage(
-        { action: 'get_role', roleId: 'role_nonexistent' },
-        mockContext
-      )
+  describe('executeRbacManage: set_role_permission / reset_role_permission', () => {
+    it('fails set_role_permission without role/permission/effect', async () => {
+      const result = await executeRbacManage({ action: 'set_role_permission' }, mockContext)
       expect(result.success).toBe(false)
-      expect(result.error).toContain('not found')
+      expect(result.error).toContain('role, permission and effect are required')
     })
 
-    it('should delete a custom role', async () => {
-      // Create first
-      await executeRbacManage({ action: 'create_role', name: 'temp-role' }, mockContext)
-
-      // List to find the ID
-      const listResult = await executeRbacManage({ action: 'list_roles' }, mockContext)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tempRole = listResult.roles!.find((r: any) => r.name === 'temp-role')
-      expect(tempRole).toBeDefined()
-
+    it('owner can set a role permission', async () => {
       const result = await executeRbacManage(
-        { action: 'delete_role', roleId: tempRole!.id },
+        {
+          action: 'set_role_permission',
+          role: 'member',
+          permission: 'registry:approve',
+          effect: 'allow',
+        },
         mockContext
       )
       expect(result.success).toBe(true)
-      expect(result.message).toContain('deleted')
+      expect(result.message).toContain('Set **allow**')
+
+      const after = await executeRbacManage({ action: 'get_role', role: 'member' }, mockContext)
+      const cell = after.role!.permissions.find((p) => p.permission === 'registry:approve')
+      expect(cell).toMatchObject({ effect: 'allow', source: 'grant' })
     })
 
-    it('should not delete built-in roles', async () => {
+    it('fails reset_role_permission without role/permission', async () => {
+      const result = await executeRbacManage({ action: 'reset_role_permission' }, mockContext)
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('role and permission are required')
+    })
+
+    it('reset_role_permission reports false when there was nothing to clear', async () => {
       const result = await executeRbacManage(
-        { action: 'delete_role', roleId: 'role_admin' },
+        { action: 'reset_role_permission', role: 'admin', permission: 'registry:approve' },
+        mockContext
+      )
+      expect(result.success).toBe(true)
+      expect(result.message).toContain('already at the built-in default')
+    })
+
+    it('reset_role_permission clears a real override', async () => {
+      await executeRbacManage(
+        {
+          action: 'set_role_permission',
+          role: 'admin',
+          permission: 'registry:approve',
+          effect: 'deny',
+        },
+        mockContext
+      )
+      const result = await executeRbacManage(
+        { action: 'reset_role_permission', role: 'admin', permission: 'registry:approve' },
+        mockContext
+      )
+      expect(result.success).toBe(true)
+      expect(result.message).toContain('Cleared the override')
+    })
+  })
+
+  describe('executeRbacManage: gate 3 (no team:manage_rbac) and gate 4/5 (owner-anchored writes)', () => {
+    it('gate 3: a plain member with no grant cannot read or write the matrix', async () => {
+      stub.setActor({ userId: 'stub-member', teamId: STUB_TEAM_ID, role: 'member' })
+      const result = await executeRbacManage({ action: 'list_roles' }, mockContext)
+      expect(result.success).toBe(false)
+      expect(isPermissionDeniedError(result.error)).toBe(true)
+      expect(permissionErrorText(result.error)).toContain(MANAGE_RBAC_PERMISSION)
+    })
+
+    it('SMI-6242: a plain admin with no explicit grant ALSO cannot write (default is now deny)', async () => {
+      stub.setActor({ userId: 'stub-admin', teamId: STUB_TEAM_ID, role: 'admin' })
+      const result = await executeRbacManage(
+        {
+          action: 'set_role_permission',
+          role: 'admin',
+          permission: 'registry:approve',
+          effect: 'deny',
+        },
         mockContext
       )
       expect(result.success).toBe(false)
-      expect(result.error).toContain('built-in role')
+      expect(isPermissionDeniedError(result.error)).toBe(true)
     })
 
-    it('should fail delete_role without roleId', async () => {
-      const result = await executeRbacManage({ action: 'delete_role' }, mockContext)
-      expect(result.success).toBe(false)
-      expect(result.error).toContain('roleId is required')
+    // SMI-6319 (`20260901000000_rbac_meta_permission_not_grantable.sql`): this test used to prove
+    // that once the OWNER elevated a non-owner `admin` with an explicit `team:manage_rbac` grant,
+    // that elevated admin still could not rewrite `team:manage_rbac` itself (gate 1's non-owner
+    // branch). SMI-6319 removes the ability to construct that principal at all -- no grant row may
+    // ever set `team:manage_rbac` to `allow`, for ANY role, including by the owner -- so the
+    // elevation step itself now fails before the original assertion is ever reached. Rewritten to
+    // assert that unreachability directly, and that the refused write left no partial state.
+    it('SMI-6319: the owner cannot elevate `admin` with team:manage_rbac (was gate 4, now unreachable)', async () => {
+      const elevate = await executeRbacManage(
+        {
+          action: 'set_role_permission',
+          role: 'admin',
+          permission: 'team:manage_rbac',
+          effect: 'allow',
+        },
+        mockContext
+      )
+      expect(elevate.success).toBe(false)
+      expect(isPermissionDeniedError(elevate.error)).toBe(true)
+      expect(permissionErrorText(elevate.error)).toBe(
+        'The "team:manage_rbac" permission is owner-only and cannot be granted to another role.'
+      )
+
+      const after = await executeRbacManage({ action: 'get_role', role: 'admin' }, mockContext)
+      expect(
+        after.role!.permissions.find((p) => p.permission === 'team:manage_rbac')
+      ).toMatchObject({ effect: 'deny', source: 'default' })
+    })
+
+    // SMI-6319: this test used to prove that an admin the owner had elevated with
+    // `team:manage_rbac` could still freely write registry:* grants -- i.e. that gate 4's
+    // meta-only restriction was not over-broad. That elevation is now unreachable (see the test
+    // above), so a non-owner can no longer reach `set_role_permission` at all, for any
+    // permission (see the gate-3 test earlier in this block -- that is now the permanent state
+    // for every non-owner). Rewritten as the equivalent scope check for the NEW rule 1b: it
+    // fires only for the two META_PERMISSIONS, so an ordinary registry:* `allow` write -- the
+    // one write path a caller (now only ever the owner) can still make -- is untouched by it.
+    it('SMI-6319 scope: rule 1b only blocks the two meta-permissions -- registry:* allow writes are unaffected', async () => {
+      const approve = await executeRbacManage(
+        {
+          action: 'set_role_permission',
+          role: 'admin',
+          permission: 'registry:approve',
+          effect: 'allow',
+        },
+        mockContext
+      )
+      expect(approve.success).toBe(true)
+
+      const deprecate = await executeRbacManage(
+        {
+          action: 'set_role_permission',
+          role: 'member',
+          permission: 'registry:deprecate',
+          effect: 'allow',
+        },
+        mockContext
+      )
+      expect(deprecate.success).toBe(true)
+    })
+
+    // Adversarial-review fix (SMI-6203 security round): gate 4 originally covered
+    // `team:manage_rbac` only, so an admin the owner elevated for registry work could grant
+    // itself `team:manage_sso` — IdP registration + domain claims, i.e. the ability to
+    // authenticate as the owner. Both meta-permissions became owner-only, on write AND reset.
+    //
+    // SMI-6319 update: this test used to prove that an elevated (non-owner) admin could not
+    // write or clear team:manage_sso. Elevation is now unreachable, so the scenario collapses
+    // one step earlier — rewritten to prove team:manage_sso gets the SAME rule-1b refusal as
+    // team:manage_rbac (the first test above), this time against the `member` role, completing
+    // the (role x meta-permission) coverage matrix across this describe block.
+    it('SMI-6319: the owner cannot elevate `member` with team:manage_sso either (was gate 4 scope, now unreachable)', async () => {
+      const elevate = await executeRbacManage(
+        {
+          action: 'set_role_permission',
+          role: 'member',
+          permission: 'team:manage_sso',
+          effect: 'allow',
+        },
+        mockContext
+      )
+      expect(elevate.success).toBe(false)
+      expect(isPermissionDeniedError(elevate.error)).toBe(true)
+      // Names the permission actually attempted, not the one that gates the operation.
+      expect(permissionErrorText(elevate.error)).toBe(
+        'The "team:manage_sso" permission is owner-only and cannot be granted to another role.'
+      )
+    })
+
+    // SMI-6319: this test used to prove the OWNER could still write and clear team:manage_sso —
+    // true before SMI-6319, but the WRITE half is now the exact case rule 1b exists to refuse
+    // (the owner is not exempt from rule 1b; only `hasPermission`'s unconditional owner
+    // short-circuit is, and the owner never loses that). Split in two: the write half below now
+    // asserts the refusal, and a second test confirms the owner can still write a DENY and clear
+    // the row — `deny` can only narrow, so rule 1b never applies to it.
+    it('gate 4 scope (SMI-6319): the OWNER cannot write an allow to team:manage_sso either', async () => {
+      const grant = await executeRbacManage(
+        {
+          action: 'set_role_permission',
+          role: 'admin',
+          permission: 'team:manage_sso',
+          effect: 'allow',
+        },
+        mockContext
+      )
+      expect(grant.success).toBe(false)
+      expect(isPermissionDeniedError(grant.error)).toBe(true)
+      expect(permissionErrorText(grant.error)).toBe(
+        'The "team:manage_sso" permission is owner-only and cannot be granted to another role.'
+      )
+    })
+
+    it('gate 4 scope: the OWNER can still write a deny and clear team:manage_sso', async () => {
+      const denied = await executeRbacManage(
+        {
+          action: 'set_role_permission',
+          role: 'admin',
+          permission: 'team:manage_sso',
+          effect: 'deny',
+        },
+        mockContext
+      )
+      expect(denied.success).toBe(true)
+      expect(denied.message).toContain('Set **deny**')
+
+      const cleared = await executeRbacManage(
+        { action: 'reset_role_permission', role: 'admin', permission: 'team:manage_sso' },
+        mockContext
+      )
+      expect(cleared.success).toBe(true)
+      expect(cleared.message).toContain('Cleared the override')
+    })
+
+    // SMI-6319: this test used to prove that a MEMBER the owner had elevated with
+    // `team:manage_rbac` could not self-widen its own registry:approve grant via a direct
+    // effect='allow' write (gate 5's no-self-widening rule), though it COULD narrow via deny.
+    // Elevation of `member` is now unreachable for the same reason as `admin` above — rewritten
+    // to assert that unreachability for the `member` role target, completing the last of the
+    // four (role x meta-permission) combinations this describe block now covers.
+    it('SMI-6319: the owner cannot elevate `member` with team:manage_rbac either (was gate 5, now unreachable)', async () => {
+      const elevate = await executeRbacManage(
+        {
+          action: 'set_role_permission',
+          role: 'member',
+          permission: 'team:manage_rbac',
+          effect: 'allow',
+        },
+        mockContext
+      )
+      expect(elevate.success).toBe(false)
+      expect(isPermissionDeniedError(elevate.error)).toBe(true)
+      expect(permissionErrorText(elevate.error)).toBe(
+        'The "team:manage_rbac" permission is owner-only and cannot be granted to another role.'
+      )
+    })
+
+    // SMI-6319 (confirmation-round fix, was gate 5): this test used to prove a granted member
+    // could not bypass no-self-widening via set(deny)-then-reset on registry:approve (whose
+    // admin default is `allow`). That bypass shape needed a "granted member" principal SMI-6319
+    // makes unreachable (see the two tests above) — and it was specific to a permission whose
+    // DEFAULT is `allow`. For team:manage_rbac/team:manage_sso, DEFAULT_ROLE_PERMISSIONS is
+    // `deny` for every (role, permission) pair, so a reset can never restore a meta cell to
+    // `allow`, and rule 1b (which only inspects effect === 'allow') needs no separate reset-side
+    // twin. This proves that directly: the owner clearing a never-granted meta cell reports
+    // "nothing to clear", not a refusal.
+    it('SMI-6319: reset on a meta-permission needs no reset-side twin of rule 1b -- the default is always deny', async () => {
+      const result = await executeRbacManage(
+        { action: 'reset_role_permission', role: 'admin', permission: 'team:manage_rbac' },
+        mockContext
+      )
+      expect(result.success).toBe(true)
+      expect(result.message).toContain('already at the built-in default')
     })
   })
 
   // ==========================================================================
-  // rbac_assign_role handler
+  // executeRbacAssignRole
   // ==========================================================================
 
   describe('executeRbacAssignRole', () => {
-    it('should assign a role to a user', async () => {
-      const input: RbacAssignRoleInput = {
-        action: 'assign',
-        userId: 'user_123',
-        roleId: 'role_member',
-      }
-      const result = await executeRbacAssignRole(input, mockContext)
-      expect(result.success).toBe(true)
-      expect(result.assignment).toBeDefined()
-      expect(result.assignment!.userId).toBe('user_123')
-      expect(result.assignment!.roleName).toBe('member')
-      expect(result.message).toContain('Role Assigned')
-    })
-
-    it('should fail assign without userId', async () => {
-      const result = await executeRbacAssignRole(
-        { action: 'assign', roleId: 'role_member' },
-        mockContext
-      )
-      expect(result.success).toBe(false)
-      expect(result.error).toContain('userId and roleId are required')
-    })
-
-    it('should fail assign without roleId', async () => {
-      const result = await executeRbacAssignRole(
-        { action: 'assign', userId: 'user_123' },
-        mockContext
-      )
-      expect(result.success).toBe(false)
-      expect(result.error).toContain('userId and roleId are required')
-    })
-
-    it('should revoke an assignment', async () => {
-      await executeRbacAssignRole(
-        { action: 'assign', userId: 'user_123', roleId: 'role_member' },
-        mockContext
-      )
-      const result = await executeRbacAssignRole(
-        { action: 'revoke', userId: 'user_123', roleId: 'role_member' },
-        mockContext
-      )
-      expect(result.success).toBe(true)
-      expect(result.message).toContain('revoked')
-    })
-
-    it('should fail revoke for nonexistent assignment', async () => {
-      const result = await executeRbacAssignRole(
-        { action: 'revoke', userId: 'user_999', roleId: 'role_admin' },
-        mockContext
-      )
-      expect(result.success).toBe(false)
-      expect(result.error).toContain('No assignment found')
-    })
-
-    it('should list assignments', async () => {
-      await executeRbacAssignRole(
-        { action: 'assign', userId: 'user_1', roleId: 'role_admin' },
-        mockContext
-      )
-      await executeRbacAssignRole(
-        { action: 'assign', userId: 'user_2', roleId: 'role_member' },
-        mockContext
-      )
+    it('lists the default stub roster (membership-gated only, not team:manage_rbac)', async () => {
+      stub.setActor({ userId: 'stub-member', teamId: STUB_TEAM_ID, role: 'member' })
       const result = await executeRbacAssignRole({ action: 'list_assignments' }, mockContext)
       expect(result.success).toBe(true)
-      expect(result.assignments).toHaveLength(2)
+      expect(result.assignments).toHaveLength(3)
+      expect(result.assignments!.map((a) => a.role).sort()).toEqual(['admin', 'member', 'owner'])
     })
 
-    it('should list empty assignments', async () => {
+    it('fails list_assignments for a non-member (plain error, not a PermissionDeniedError)', async () => {
+      stub.setActor({ userId: 'not-a-member', teamId: STUB_TEAM_ID, role: null })
       const result = await executeRbacAssignRole({ action: 'list_assignments' }, mockContext)
+      expect(result.success).toBe(false)
+      expect(isPermissionDeniedError(result.error)).toBe(false)
+      expect(result.error).toContain('not a member of this team')
+    })
+
+    it('fails assign without memberId/role', async () => {
+      const result = await executeRbacAssignRole({ action: 'assign' }, mockContext)
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('memberId and role are required')
+    })
+
+    it('owner assigns admin to the default member', async () => {
+      const result = await executeRbacAssignRole(
+        { action: 'assign', memberId: 'tm_stub_member', role: 'admin' },
+        mockContext
+      )
       expect(result.success).toBe(true)
-      expect(result.assignments).toHaveLength(0)
-      expect(result.message).toContain('No role assignments')
+      expect(result.message).toContain('now `admin`')
+    })
+
+    it('revoke rejects role="member" (removal is a separate operation)', async () => {
+      const result = await executeRbacAssignRole(
+        { action: 'revoke', memberId: 'tm_stub_admin', role: 'member' },
+        mockContext
+      )
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Only "admin" can be revoked')
+    })
+
+    it('revoke demotes an admin back to member', async () => {
+      const result = await executeRbacAssignRole(
+        { action: 'revoke', memberId: 'tm_stub_admin', role: 'admin' },
+        mockContext
+      )
+      expect(result.success).toBe(true)
+      expect(result.message).toContain('now `member`')
+    })
+
+    it("owner protection: the owner's own role can never be changed", async () => {
+      const result = await executeRbacAssignRole(
+        { action: 'assign', memberId: 'tm_stub_owner', role: 'member' },
+        mockContext
+      )
+      expect(result.success).toBe(false)
+      expect(permissionErrorText(result.error)).toContain("cannot change the team owner's role")
+    })
+
+    it('not-found member id is refused the same way as no-permission (no existence oracle)', async () => {
+      const result = await executeRbacAssignRole(
+        { action: 'assign', memberId: 'tm_does_not_exist', role: 'admin' },
+        mockContext
+      )
+      expect(result.success).toBe(false)
+      expect(isPermissionDeniedError(result.error)).toBe(true)
     })
   })
 
   // ==========================================================================
-  // rbac_create_policy handler
+  // executeRbacCreatePolicy
   // ==========================================================================
 
   describe('executeRbacCreatePolicy', () => {
-    it('should create a policy', async () => {
-      const input: RbacCreatePolicyInput = {
-        action: 'create',
-        name: 'allow-skill-read',
-        effect: 'allow',
-        resources: ['skills:*'],
-        actions: ['read', 'search'],
-      }
-      const result = await executeRbacCreatePolicy(input, mockContext)
+    it('lists no overrides by default', async () => {
+      const result = await executeRbacCreatePolicy({ action: 'list' }, mockContext)
       expect(result.success).toBe(true)
-      expect(result.policy).toBeDefined()
-      expect(result.policy!.name).toBe('allow-skill-read')
-      expect(result.policy!.effect).toBe('allow')
-      expect(result.message).toContain('Policy Created')
+      expect(result.grants).toHaveLength(0)
+      expect(result.message).toContain('No overrides set')
     })
 
-    it('should fail create without name', async () => {
+    it('fails create without role', async () => {
       const result = await executeRbacCreatePolicy(
-        { action: 'create', effect: 'allow', resources: ['*'], actions: ['*'] },
+        { action: 'create', effect: 'deny', resources: ['registry'], actions: ['approve'] },
         mockContext
       )
       expect(result.success).toBe(false)
-      expect(result.error).toContain('name is required')
+      expect(result.error).toContain('role is required')
     })
 
-    it('should fail create without effect', async () => {
+    it('fails create without resources/actions', async () => {
       const result = await executeRbacCreatePolicy(
-        { action: 'create', name: 'test', resources: ['*'], actions: ['*'] },
+        { action: 'create', role: 'admin', effect: 'deny' },
+        mockContext
+      )
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('resources and actions are required')
+    })
+
+    it('fails create without effect', async () => {
+      const result = await executeRbacCreatePolicy(
+        { action: 'create', role: 'admin', resources: ['registry'], actions: ['approve'] },
         mockContext
       )
       expect(result.success).toBe(false)
       expect(result.error).toContain('effect is required')
     })
 
-    it('should fail create without resources', async () => {
+    it('refuses an unsupported resource:action expansion before writing anything', async () => {
       const result = await executeRbacCreatePolicy(
-        { action: 'create', name: 'test', effect: 'deny', actions: ['*'] },
-        mockContext
-      )
-      expect(result.success).toBe(false)
-      expect(result.error).toContain('resources is required')
-    })
-
-    it('should fail create without actions', async () => {
-      const result = await executeRbacCreatePolicy(
-        { action: 'create', name: 'test', effect: 'deny', resources: ['*'] },
-        mockContext
-      )
-      expect(result.success).toBe(false)
-      expect(result.error).toContain('actions is required')
-    })
-
-    it('should list policies', async () => {
-      await executeRbacCreatePolicy(
         {
           action: 'create',
-          name: 'p1',
+          role: 'admin',
           effect: 'allow',
-          resources: ['*'],
-          actions: ['*'],
-        },
-        mockContext
-      )
-      const result = await executeRbacCreatePolicy({ action: 'list' }, mockContext)
-      expect(result.success).toBe(true)
-      expect(result.policies).toHaveLength(1)
-    })
-
-    it('should list empty policies', async () => {
-      const result = await executeRbacCreatePolicy({ action: 'list' }, mockContext)
-      expect(result.success).toBe(true)
-      expect(result.policies).toHaveLength(0)
-      expect(result.message).toContain('No policies')
-    })
-
-    it('should get a policy by ID', async () => {
-      const createResult = await executeRbacCreatePolicy(
-        {
-          action: 'create',
-          name: 'readable',
-          effect: 'allow',
-          resources: ['skills:*'],
+          resources: ['audit'],
           actions: ['read'],
         },
         mockContext
       )
-      const policyId = createResult.policy!.id
-
-      const result = await executeRbacCreatePolicy({ action: 'get', policyId }, mockContext)
-      expect(result.success).toBe(true)
-      expect(result.policy!.name).toBe('readable')
-    })
-
-    it('should fail get without policyId', async () => {
-      const result = await executeRbacCreatePolicy({ action: 'get' }, mockContext)
       expect(result.success).toBe(false)
-      expect(result.error).toContain('policyId is required')
+      expect(result.error).toContain('Not a configurable permission')
+
+      const list = await executeRbacCreatePolicy({ action: 'list' }, mockContext)
+      expect(list.grants).toHaveLength(0)
     })
 
-    it('should fail get for nonexistent policy', async () => {
+    it('create expands resources x actions into grant rows', async () => {
       const result = await executeRbacCreatePolicy(
-        { action: 'get', policyId: 'policy_999' },
-        mockContext
-      )
-      expect(result.success).toBe(false)
-      expect(result.error).toContain('not found')
-    })
-
-    it('should delete a policy', async () => {
-      const createResult = await executeRbacCreatePolicy(
         {
           action: 'create',
-          name: 'temp',
+          name: 'no-registry-writes',
+          role: 'member',
           effect: 'deny',
-          resources: ['admin:*'],
-          actions: ['*'],
+          resources: ['registry'],
+          actions: ['approve', 'deprecate'],
+        },
+        mockContext
+      )
+      expect(result.success).toBe(true)
+      expect(result.grants).toHaveLength(2)
+      expect(result.message).toContain('Policy Applied: no-registry-writes')
+
+      const list = await executeRbacCreatePolicy({ action: 'list' }, mockContext)
+      expect(list.grants).toHaveLength(2)
+    })
+
+    it('delete clears grants written by create', async () => {
+      await executeRbacCreatePolicy(
+        {
+          action: 'create',
+          role: 'member',
+          effect: 'deny',
+          resources: ['registry'],
+          actions: ['approve'],
         },
         mockContext
       )
       const result = await executeRbacCreatePolicy(
-        { action: 'delete', policyId: createResult.policy!.id },
+        { action: 'delete', role: 'member', resources: ['registry'], actions: ['approve'] },
         mockContext
       )
       expect(result.success).toBe(true)
-      expect(result.message).toContain('deleted')
+      expect(result.message).toContain('Cleared 1 of 1 override(s)')
+
+      const list = await executeRbacCreatePolicy({ action: 'list' }, mockContext)
+      expect(list.grants).toHaveLength(0)
     })
 
-    it('should fail delete without policyId', async () => {
-      const result = await executeRbacCreatePolicy({ action: 'delete' }, mockContext)
-      expect(result.success).toBe(false)
-      expect(result.error).toContain('policyId is required')
-    })
+    // SMI-6267 UAT finding F3: each expanded permission in a create/delete batch is a SEPARATE
+    // RPC call with no shared transaction — a mid-batch failure must report exactly which
+    // permissions succeeded and which failed, not a bare success:false.
+    it('create reports partial results (F3) when a mid-batch permission write fails', async () => {
+      const calls: string[] = []
+      const failingAfterFirst: RBACService = {
+        listPermissions: async () => [],
+        setRolePermission: async (_teamId, _role, permission) => {
+          calls.push(permission)
+          if (permission === 'registry:deprecate') {
+            throw new Error('simulated RPC failure')
+          }
+        },
+        resetRolePermission: async () => false,
+        listMembers: async () => [],
+        setMemberRole: async () => {},
+      }
+      setRBACService(failingAfterFirst)
 
-    it('should fail delete for nonexistent policy', async () => {
       const result = await executeRbacCreatePolicy(
-        { action: 'delete', policyId: 'policy_999' },
+        {
+          action: 'create',
+          role: 'member',
+          effect: 'deny',
+          resources: ['registry'],
+          actions: ['approve', 'deprecate'],
+        },
         mockContext
       )
+
       expect(result.success).toBe(false)
-      expect(result.error).toContain('not found')
+      expect(calls).toEqual(['registry:approve', 'registry:deprecate'])
+      expect(result.grants).toBeUndefined()
+      expect(result.partialResults).toEqual([
+        { permission: 'registry:approve', succeeded: true },
+        { permission: 'registry:deprecate', succeeded: false, error: 'simulated RPC failure' },
+      ])
+      expect(result.error).toBeTruthy()
+      expect(result.message).toContain('registry:approve')
+      expect(result.message).toContain('registry:deprecate')
+    })
+
+    it('delete reports partial results (F3) when a mid-batch reset fails', async () => {
+      const failingAfterFirst: RBACService = {
+        listPermissions: async () => [],
+        setRolePermission: async () => {},
+        resetRolePermission: async (_teamId, _role, permission) => {
+          if (permission === 'registry:deprecate') {
+            throw new Error('simulated reset failure')
+          }
+          return true
+        },
+        listMembers: async () => [],
+        setMemberRole: async () => {},
+      }
+      setRBACService(failingAfterFirst)
+
+      const result = await executeRbacCreatePolicy(
+        {
+          action: 'delete',
+          role: 'member',
+          resources: ['registry'],
+          actions: ['approve', 'deprecate'],
+        },
+        mockContext
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.partialResults).toEqual([
+        { permission: 'registry:approve', succeeded: true },
+        { permission: 'registry:deprecate', succeeded: false, error: 'simulated reset failure' },
+      ])
+      expect(result.error).toBeTruthy()
+      expect(result.message).toContain('Cleared 1')
+    })
+  })
+
+  // ==========================================================================
+  // SMI-6184: dataSource must reflect the actual service, not Supabase config
+  // ==========================================================================
+
+  describe('SMI-6184: dataSource reflects the actual service', () => {
+    it('reports dataSource "stub" across all three RBAC tools even when Supabase env vars are set', async () => {
+      const prevUrl = process.env.SUPABASE_URL
+      const prevKey = process.env.SUPABASE_ANON_KEY
+      process.env.SUPABASE_URL = 'https://example.supabase.co'
+      process.env.SUPABASE_ANON_KEY = 'anon-key'
+      try {
+        const manage = await executeRbacManage({ action: 'list_roles' }, mockContext)
+        const assign = await executeRbacAssignRole({ action: 'list_assignments' }, mockContext)
+        const policy = await executeRbacCreatePolicy({ action: 'list' }, mockContext)
+        expect(manage.dataSource).toBe('stub')
+        expect(assign.dataSource).toBe('stub')
+        expect(policy.dataSource).toBe('stub')
+      } finally {
+        if (prevUrl === undefined) delete process.env.SUPABASE_URL
+        else process.env.SUPABASE_URL = prevUrl
+        if (prevKey === undefined) delete process.env.SUPABASE_ANON_KEY
+        else process.env.SUPABASE_ANON_KEY = prevKey
+      }
     })
   })
 })

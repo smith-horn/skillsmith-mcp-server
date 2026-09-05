@@ -99,6 +99,8 @@ describe('executeGetSkill (API path)', () => {
                 riskScore: 0,
                 findingsCount: 0,
                 scannedAt: '2026-02-18T05:07:13.844Z',
+                scanCoverageIncomplete: false,
+                scanCoverageNote: null,
             });
         });
         it('returns passed=false for a quarantined skill', async () => {

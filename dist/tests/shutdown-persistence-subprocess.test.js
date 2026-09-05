@@ -165,19 +165,26 @@ describe.skipIf(skipInPrePush)('SMI-5639 shutdown persistence — subprocess SIG
      * sync to be genuinely in flight (deliberately does NOT set
      * `SKILLSMITH_BACKGROUND_SYNC=false`, unlike the test above) by pointing
      * the API client at a local HTTP stub (`SKILLSMITH_API_URL`) that stalls
-     * its `/skills-search` response, then sends SIGTERM while that request is
+     * its `/registry-sync` response, then sends SIGTERM while that request is
      * still pending. The coordinator must quiesce (abort + await) that sync
      * before closing the db — a clean exit 0 and a valid persisted file prove
      * no write raced the close.
+     *
+     * SMI-6236: `SyncEngine` now fetches via `/registry-sync` (Team/Enterprise
+     * bulk enumeration) instead of `/skills-search` (the old 8-broad-query
+     * workaround) — this stub was updated to match, since a 404 from an
+     * un-stubbed `/registry-sync` would have resolved the fetch immediately
+     * instead of staying genuinely in-flight, silently breaking this test's
+     * entire premise rather than just failing loudly.
      */
     it('an in-flight background sync at SIGTERM time settles cleanly before db close (no write races the close)', async () => {
         tmpDbPath = path.join(os.tmpdir(), `skillsmith-shutdown-subprocess-race-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
-        let searchRequestReceived;
-        const searchRequestReceivedPromise = new Promise((resolve) => {
-            searchRequestReceived = resolve;
+        let syncRequestReceived;
+        const syncRequestReceivedPromise = new Promise((resolve) => {
+            syncRequestReceived = resolve;
         });
         // Minimal local stub: /health responds fast (checkApiHealth's own 5s
-        // timeout must not trip); /skills-search stalls for well longer than the
+        // timeout must not trip); /registry-sync stalls for well longer than the
         // test needs to observe + send SIGTERM, simulating a genuinely in-flight
         // sync request at signal time.
         const stubServer = http.createServer((req, res) => {
@@ -186,8 +193,8 @@ describe.skipIf(skipInPrePush)('SMI-5639 shutdown persistence — subprocess SIG
                 res.end(JSON.stringify({ status: 'healthy', version: '1.0.0' }));
                 return;
             }
-            if (req.url?.startsWith('/skills-search')) {
-                searchRequestReceived();
+            if (req.url?.startsWith('/registry-sync')) {
+                syncRequestReceived();
                 // Never respond within this test's lifetime — the abort signal (not
                 // a resolved/rejected fetch) is what ends this request from the
                 // client's perspective once quiesce runs.
@@ -232,12 +239,12 @@ describe.skipIf(skipInPrePush)('SMI-5639 shutdown persistence — subprocess SIG
                     reject(err);
                 });
             });
-            // Wait for the stub to actually receive the search request — proves a
+            // Wait for the stub to actually receive the sync request — proves a
             // real sync is genuinely mid-fetch, not a race against an assumption
             // about startup timing.
             await Promise.race([
-                searchRequestReceivedPromise,
-                new Promise((_resolve, reject) => setTimeout(() => reject(new Error('background sync never reached /skills-search in time')), 20_000)),
+                syncRequestReceivedPromise,
+                new Promise((_resolve, reject) => setTimeout(() => reject(new Error('background sync never reached /registry-sync in time')), 20_000)),
             ]);
             const exitCode = await new Promise((resolve, reject) => {
                 const timeout = setTimeout(() => {

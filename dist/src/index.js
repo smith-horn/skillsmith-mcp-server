@@ -6,9 +6,6 @@
  * @see SMI-792: Database initialization with tool context
  * @see SMI-XXXX: First-run integration and documentation delivery
  */
-import { createRequire } from 'node:module';
-// ESM-compatible require for dynamic module resolution
-const require = createRequire(import.meta.url);
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -57,7 +54,7 @@ import { isFirstRun, markFirstRunComplete } from './onboarding/first-run.js';
 // composition) lives in this sibling to keep index.ts under the 500-LOC gate.
 // Re-exported below for integration testability (plan G).
 import { maybeInstallMissingTier1Skills } from './onboarding/tier1-self-heal.js';
-import { checkForUpdates, formatUpdateNotification } from '@skillsmith/core';
+import { checkForUpdates, formatUpdateNotification, resolveUpdateNotificationClient, } from '@skillsmith/core';
 // SMI-5456: agent-mediation marker channel — resolution + AsyncLocalStorage
 // scoping now live in call-tool-handler.js (SMI-5479 extraction).
 // SMI-5479: flush-on-shutdown wiring lives in shutdown.js (own module — no
@@ -80,11 +77,11 @@ import { resolveStartupFlag } from './cli-flags.js';
 // see middleware/toolProfile.ts for the full contract.
 import { filterToolsForAgentProfile } from './middleware/toolProfile.js';
 // Package version - keep in sync with package.json
-const PACKAGE_VERSION = '0.7.9';
+const PACKAGE_VERSION = '0.7.13';
 const PACKAGE_NAME = '@skillsmith/mcp-server';
 const logger = createLogger('mcp', { version: PACKAGE_VERSION }); // SMI-5615
 import { installBundledSkills, installUserDocs } from './onboarding/install-assets.js';
-import { handleDocsFlag, ensureSkillsmithSkillInstalled } from './index.startup-helpers.js';
+import { handleDocsFlag, ensureSkillsmithSkillInstalled, runStartupDiagnostics, } from './index.startup-helpers.js';
 // SMI-2679: Quota enforcement middleware — module-level singletons, initialized once
 // licenseMiddleware uses a cache (TTL) so the first-call @smith-horn/enterprise lazy-load
 // latency (~10-50ms) is not incurred on every tool invocation.
@@ -195,84 +192,11 @@ export async function runFirstTimeSetup() {
 }
 // SMI-5582 (plan G): re-export so integration tests can drive it directly.
 export { maybeInstallMissingTier1Skills };
-/**
- * SMI-2163: Startup diagnostics for common installation issues
- * Detects native module problems and provides actionable error messages
- */
-function runStartupDiagnostics() {
-    // Check for native module issues by attempting dynamic import simulation
-    // The actual check happens when @skillsmith/core loads better-sqlite3
-    try {
-        // Verify core module can be loaded (will fail if native modules broken)
-        require.resolve('@skillsmith/core');
-    }
-    catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (msg.includes('NODE_MODULE_VERSION')) {
-            logger.error(`
-╔══════════════════════════════════════════════════════════════╗
-║  Skillsmith: Native Module Version Mismatch                  ║
-╠══════════════════════════════════════════════════════════════╣
-║                                                              ║
-║  Your Node.js version (${process.version.padEnd(10)}) doesn't match the       ║
-║  pre-compiled native modules.                                ║
-║                                                              ║
-║  To fix, run one of:                                         ║
-║                                                              ║
-║    SKILLSMITH_FORCE_WASM=true to use WASM SQLite fallback    ║
-║                                                              ║
-║  Or reinstall completely:                                    ║
-║                                                              ║
-║    npm uninstall @skillsmith/mcp-server                      ║
-║    npm install @skillsmith/mcp-server                        ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝
-`);
-            process.exit(1);
-        }
-        if (msg.includes('GLIBC') || msg.includes('libc') || msg.includes('GLIBCXX')) {
-            logger.error(`
-╔══════════════════════════════════════════════════════════════╗
-║  Skillsmith: Missing System Library (glibc)                  ║
-╠══════════════════════════════════════════════════════════════╣
-║                                                              ║
-║  Native modules require glibc which is not available on      ║
-║  Alpine Linux or some minimal containers.                    ║
-║                                                              ║
-║  Options:                                                    ║
-║    1. Use a Debian/Ubuntu-based environment                  ║
-║    2. Use Docker: docker run -it node:22 npx @skillsmith/... ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝
-`);
-            process.exit(1);
-        }
-        if (msg.includes('invalid ELF header')) {
-            logger.error(`
-╔══════════════════════════════════════════════════════════════╗
-║  Skillsmith: Architecture Mismatch                           ║
-╠══════════════════════════════════════════════════════════════╣
-║                                                              ║
-║  Native modules were compiled for a different architecture.  ║
-║                                                              ║
-║  This can happen when:                                       ║
-║    - Copying node_modules between machines                   ║
-║    - Running x86 modules on ARM (or vice versa)              ║
-║                                                              ║
-║  To fix, reinstall:                                          ║
-║                                                              ║
-║    rm -rf node_modules                                       ║
-║    npm install                                               ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝
-`);
-            process.exit(1);
-        }
-        // Unknown module resolution error - log but don't exit
-        // The actual error will surface when the module is used
-        logger.warn(`[Skillsmith] Warning: Could not resolve @skillsmith/core: ${msg}`);
-    }
-}
+// SMI-2163: Startup diagnostics (native module errors) extracted to
+// index.startup-helpers.ts's runStartupDiagnostics() to keep this file under
+// the 500-LOC gate (SMI-6111). Call site in main() below now passes
+// PACKAGE_VERSION explicitly so the extracted logger keeps the real version
+// stamp instead of createLogger's 'unknown' default.
 // SMI-5009 (origin) / SMI-5039 (extraction): the embedding capability probe
 // now lives in @skillsmith/core/embeddings/probe. See that file for the
 // contract (hard 2 s timeout, try/catch wrapper, stderr-only, never throws).
@@ -311,7 +235,7 @@ async function main() {
         return;
     }
     // SMI-2163: Run startup diagnostics before anything else
-    runStartupDiagnostics();
+    runStartupDiagnostics(PACKAGE_VERSION);
     // Handle --docs flag
     if (process.argv.includes('--docs') || process.argv.includes('-d')) {
         handleDocsFlag();
@@ -353,7 +277,7 @@ async function main() {
         // idempotent — it skips skills already present at the runtime path resolved
         // by `SKILLSMITH_CLIENT`. Opt out via SKILLSMITH_SKIP_SKILL_INSTALL=1.
         if (process.env.SKILLSMITH_SKIP_SKILL_INSTALL !== '1') {
-            ensureSkillsmithSkillInstalled();
+            ensureSkillsmithSkillInstalled(PACKAGE_VERSION);
         }
     }
     // SMI-5582: Tier-1 registry install + self-heal. Runs on EVERY startup (not
@@ -369,7 +293,14 @@ async function main() {
         checkForUpdates(PACKAGE_NAME, PACKAGE_VERSION)
             .then((result) => {
             if (result?.updateAvailable) {
-                console.error(formatUpdateNotification(result)); // SMI-5615: plain console.error, not disk-only logger.info
+                // SMI-5893 Wave 10: resolveUpdateNotificationClient never throws
+                // (code-review finding — an uncaught throw here would be silently
+                // swallowed by the .catch() below, dropping this entire
+                // notification) and stays undefined when SKILLSMITH_CLIENT is
+                // unset rather than guessing claude-code.
+                const client = resolveUpdateNotificationClient(process.env.SKILLSMITH_CLIENT);
+                // SMI-5615: plain console.error, not disk-only logger.info
+                console.error(formatUpdateNotification(result, client));
             }
         })
             .catch(() => {

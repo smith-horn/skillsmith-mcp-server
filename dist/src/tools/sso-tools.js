@@ -2,10 +2,23 @@
  * @fileoverview Enterprise SSO/SAML configuration MCP tools
  * @module @skillsmith/mcp-server/tools/sso-tools
  * @see SMI-3900: SSO/SAML Configuration MCP Tools
+ * @see SMI-6204 (Wave 3 of SMI-6200): live `set`/`test`/`remove`/`claim_domain`/`verify_domain`
+ *      over the `team-sso-manage` edge function (`sso-tools.live.ts`); `sso_settings` reads over
+ *      the same function. Live/stub selection mirrors `rbac-tools.ts`'s
+ *      `isSupabaseConfigured()` switch (now in `rbac-tools.action.ts`) below.
+ * @see SMI-5127 / SMI-6200 Wave 4 Step 0: the action-handler implementations, the
+ *      `withTelemetry`-wrapped exports, the service singleton, and the `ConfigureSsoResult`/
+ *      `SsoSettingsResult` result shapes moved to the sibling `sso-tools.action.ts` (same
+ *      500-line audit:standards budget split `rbac-tools.ts` got in the same pass — done
+ *      mechanically ahead of Wave 4's own new SSO surface landing in this file) —
+ *      re-exported below so every existing import site (index.ts, tool-dispatch.ts,
+ *      sso-tools.test.ts, sso-tools.live.test.ts) reaches them unchanged. This file now
+ *      holds only the MCP tool registration / Zod input schemas / JSON tool schemas and
+ *      the public re-export surface.
  *
- * SSO is scoped to config storage + validation only. Actual SAML/OIDC auth
- * flows are deferred to a Supabase edge function since local MCP servers
- * have no HTTP callback endpoint.
+ * Actual SAML/OIDC auth flows are deferred to a Supabase edge function since local MCP servers
+ * have no HTTP callback endpoint — this file (plus `sso-tools.live.ts`) is a management interface
+ * over that function, not a SAML implementation.
  *
  * Security: XML parsing and signature validation MUST be delegated to a
  * vetted SAML library. Custom SAML assertion parsing is prohibited.
@@ -13,13 +26,12 @@
  * Tier gate: Enterprise (sso_saml feature flag).
  */
 import { z } from 'zod';
-import { isSupabaseConfigured } from '../supabase-client.js';
-import { withTelemetry } from '@skillsmith/core/telemetry';
+export { createStubSSOService } from './sso-tools.stub.js';
 // ============================================================================
 // Input schemas
 // ============================================================================
 export const configureSsoInputSchema = z.object({
-    action: z.enum(['set', 'test', 'remove']),
+    action: z.enum(['set', 'test', 'remove', 'claim_domain', 'verify_domain']),
     idpMetadataUrl: z
         .string()
         .url('Must be a valid URL')
@@ -31,6 +43,18 @@ export const configureSsoInputSchema = z.object({
         .optional()
         .default('saml')
         .describe('SSO protocol (default: saml)'),
+    domain: z
+        .string()
+        .optional()
+        .describe('Domain to claim, verify, or register for SSO auto-discovery ' +
+        '(required for set/claim_domain/verify_domain)'),
+    // SMI-6204 Wave 3 corrected plan: `expire_stale_sso_members()` is a Wave 4 deliverable, so
+    // "expire" is not offered here — only "convert_to_manual" exists this wave. Optional because
+    // it is the only legal value today; omitted, `remove` defaults to it (see the handler below).
+    memberDisposition: z
+        .enum(['convert_to_manual'])
+        .optional()
+        .describe('How to handle existing SSO-provisioned team members when removing SSO (default: convert_to_manual)'),
 });
 export const ssoSettingsInputSchema = z.object({
     includeMetadata: z
@@ -45,15 +69,16 @@ export const ssoSettingsInputSchema = z.object({
 export const configureSsoToolSchema = {
     name: 'configure_sso',
     description: 'Configure SSO/SAML integration for your organization. ' +
-        'Actions: set (store IdP config), test (simulate connection test), remove (clear config). ' +
+        'Actions: set (store IdP config), test (connection test), remove (clear config), ' +
+        'claim_domain (issue a DNS TXT verification token), verify_domain (check the TXT record). ' +
         'Requires Enterprise tier (sso_saml feature).',
     inputSchema: {
         type: 'object',
         properties: {
             action: {
                 type: 'string',
-                enum: ['set', 'test', 'remove'],
-                description: 'SSO operation: set, test, or remove',
+                enum: ['set', 'test', 'remove', 'claim_domain', 'verify_domain'],
+                description: 'SSO operation: set, test, remove, claim_domain, or verify_domain',
             },
             idpMetadataUrl: {
                 type: 'string',
@@ -67,6 +92,15 @@ export const configureSsoToolSchema = {
                 type: 'string',
                 enum: ['saml', 'oidc'],
                 description: 'SSO protocol (default: saml)',
+            },
+            domain: {
+                type: 'string',
+                description: 'Domain to claim, verify, or register (required for set/claim_domain/verify_domain)',
+            },
+            memberDisposition: {
+                type: 'string',
+                enum: ['convert_to_manual'],
+                description: 'How to handle existing SSO-provisioned members on remove (default: convert_to_manual)',
             },
         },
         required: ['action'],
@@ -86,141 +120,5 @@ export const ssoSettingsToolSchema = {
         },
     },
 };
-// ============================================================================
-// Stub service (returns realistic mock data)
-// ============================================================================
-/** @internal Exported for testing */
-export function createStubSSOService() {
-    let currentConfig = null;
-    return {
-        async set(config) {
-            const entityId = config.idpEntityId ?? new URL(config.idpMetadataUrl).origin + '/saml/metadata';
-            currentConfig = {
-                protocol: config.protocol,
-                idpMetadataUrl: config.idpMetadataUrl,
-                idpEntityId: entityId,
-                configuredAt: new Date().toISOString(),
-                status: 'active',
-            };
-            return currentConfig;
-        },
-        async test() {
-            if (!currentConfig) {
-                return {
-                    success: false,
-                    latencyMs: 0,
-                    message: 'No SSO configuration found. Use configure_sso with action "set" first.',
-                };
-            }
-            // Simulated connection test
-            return {
-                success: true,
-                latencyMs: 142,
-                message: `Connection to ${currentConfig.idpEntityId} successful (${currentConfig.protocol.toUpperCase()}).`,
-            };
-        },
-        async remove() {
-            if (!currentConfig)
-                return false;
-            currentConfig = null;
-            return true;
-        },
-        async get(includeMetadata) {
-            if (!currentConfig)
-                return null;
-            if (!includeMetadata) {
-                // Return config without the full metadata URL details
-                return { ...currentConfig };
-            }
-            return currentConfig;
-        },
-    };
-}
-// Module-level singleton
-let service = createStubSSOService();
-/** Replace the SSO config service implementation (for testing or production swap) */
-export function setSSOConfigService(svc) {
-    service = svc;
-}
-/** Get the current SSO config service instance */
-export function getSSOConfigService() {
-    return service;
-}
-/**
- * Execute a configure_sso operation.
- */
-async function executeConfigureSsoImpl(input, _context) {
-    const dataSource = isSupabaseConfigured() ? 'live' : 'stub';
-    switch (input.action) {
-        case 'set': {
-            if (!input.idpMetadataUrl) {
-                return { success: false, dataSource, error: 'idpMetadataUrl is required for action "set".' };
-            }
-            const config = await service.set({
-                idpMetadataUrl: input.idpMetadataUrl,
-                idpEntityId: input.idpEntityId,
-                protocol: input.protocol ?? 'saml',
-            });
-            return {
-                success: true,
-                dataSource,
-                config,
-                message: `SSO configured with ${config.protocol.toUpperCase()} protocol.\n` +
-                    `IdP Entity ID: ${config.idpEntityId}\n` +
-                    `Status: ${config.status}`,
-            };
-        }
-        case 'test': {
-            const result = await service.test();
-            return {
-                success: result.success,
-                dataSource,
-                test: result,
-                message: result.message,
-            };
-        }
-        case 'remove': {
-            const removed = await service.remove();
-            if (!removed) {
-                return { success: false, dataSource, error: 'No SSO configuration to remove.' };
-            }
-            return { success: true, dataSource, message: 'SSO configuration removed.' };
-        }
-    }
-}
-/**
- * Execute an sso_settings query.
- */
-async function executeSsoSettingsImpl(input, _context) {
-    const dataSource = isSupabaseConfigured() ? 'live' : 'stub';
-    const config = await service.get(input.includeMetadata ?? false);
-    if (!config) {
-        return {
-            configured: false,
-            dataSource,
-            message: 'No SSO configuration found.\n' +
-                'Use configure_sso with action "set" to configure SSO for your organization.',
-        };
-    }
-    return {
-        configured: true,
-        dataSource,
-        config,
-        message: `SSO is configured (${config.protocol.toUpperCase()}).\n` +
-            `IdP Entity ID: ${config.idpEntityId}\n` +
-            `Status: ${config.status}\n` +
-            `Configured at: ${config.configuredAt}`,
-    };
-}
-// SMI-5017 W2.S2: wrap at export boundary
-export const executeConfigureSso = withTelemetry(executeConfigureSsoImpl, {
-    source: 'mcp-tool',
-    extractSkillId: () => 'configure_sso',
-    extractFramework: () => 'unknown',
-});
-export const executeSsoSettings = withTelemetry(executeSsoSettingsImpl, {
-    source: 'mcp-tool',
-    extractSkillId: () => 'sso_settings',
-    extractFramework: () => 'unknown',
-});
+export { setSSOConfigService, getSSOConfigService, executeConfigureSso, executeSsoSettings, } from './sso-tools.action.js';
 //# sourceMappingURL=sso-tools.js.map

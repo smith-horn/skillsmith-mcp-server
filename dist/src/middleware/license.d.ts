@@ -1,9 +1,7 @@
 /**
- * License validation middleware for MCP server
- *
- * Validates that the user has the required license features for enterprise tools.
- * Gracefully degrades if @smith-horn/enterprise is not installed.
- *
+ * License validation middleware for MCP server.
+ * Validates that the user has the required license features for enterprise
+ * tools; gracefully degrades if @smith-horn/enterprise is not installed.
  * @see SMI-1055: Add license middleware to MCP server
  */
 import { type FeatureFlag } from './toolFeatureMapping.js';
@@ -19,10 +17,10 @@ export interface LicenseValidationResult {
 }
 /**
  * License tiers available in Skillsmith
- * - community: Free tier (1,000 API calls/month)
- * - individual: Solo developers ($9.99/mo, 10,000 API calls/month)
- * - team: Development teams ($25/user/mo, 100,000 API calls/month)
- * - enterprise: Full enterprise ($55/user/mo, unlimited)
+ * - community: Free tier (100 API calls/month)
+ * - individual: Solo developers ($9.99/mo, 1,000 API calls/month)
+ * - team: Development teams ($25/user/mo, 10,000 API calls/month)
+ * - enterprise: Full enterprise (Custom pricing, Contact Sales, unlimited)
  */
 export type LicenseTier = 'community' | 'individual' | 'team' | 'enterprise';
 /**
@@ -84,11 +82,6 @@ export declare function requiresLicense(toolName: string): boolean;
  * @returns The feature flag required, or null if community tool
  */
 export declare function getRequiredFeature(toolName: string): FeatureFlag | null;
-/**
- * Check if license is expiring soon (within 30 days)
- * @internal Exported for testing
- */
-export declare function getExpirationWarning(expiresAt?: Date): string | undefined;
 /**
  * License middleware context
  */
@@ -169,8 +162,8 @@ export declare function createLicenseErrorResponse(result: LicenseValidationResu
         upgradeUrl: string;
     };
 };
-export { ok, errResponse, withLicenseAndQuota, createProfileIncompleteResponse, } from './license.gate.js';
-export { featuresForTier, createTierResolver } from './license.tier.js';
+export { ok, errResponse, withLicenseAndQuota, createProfileIncompleteResponse, getExpirationWarning, } from './license.gate.js';
+export { featuresForTier, createTierResolver, createSessionTokenResolver } from './license.tier.js';
 export type { FeatureFlag } from './toolFeatureMapping.js';
 export { TOOL_FEATURES, FEATURE_DISPLAY_NAMES, FEATURE_TIERS } from './toolFeatureMapping.js';
 //# sourceMappingURL=license.d.ts.map

@@ -61,6 +61,7 @@ const TODAY_REGISTERED_TOOLS = [
     tool('apply_namespace_rename'),
     tool('apply_recommended_edit'),
     tool('skill_recover_source'),
+    tool('apply_manifest_reconcile'),
 ];
 const EXPECTED_PROFILE_MEMBER_NAMES = [
     'search',
@@ -78,10 +79,11 @@ const EXPECTED_PROFILE_MEMBER_NAMES = [
     'apply_namespace_rename',
     'apply_recommended_edit',
     'skill_audit',
+    'apply_manifest_reconcile',
 ];
 describe('AGENT_TOOL_PROFILE_NAMES', () => {
-    it('has exactly 16 entries (15 pre-SMI-5470 + undo_apply)', () => {
-        expect(AGENT_TOOL_PROFILE_NAMES).toHaveLength(16);
+    it('has exactly 17 entries (15 pre-SMI-5470 + undo_apply + SMI-6343 apply_manifest_reconcile)', () => {
+        expect(AGENT_TOOL_PROFILE_NAMES).toHaveLength(17);
     });
     it('includes undo_apply (registered as of SMI-5470; kept out of this fixture on purpose, see TODAY_REGISTERED_TOOLS)', () => {
         expect(AGENT_TOOL_PROFILE_NAMES).toContain('undo_apply');

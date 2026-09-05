@@ -12,25 +12,29 @@
  * `auth.uid()` resolves to a person and `published_by` lands non-NULL. That is a deliberate
  * credential move, not an incidental one: D-6's self-approval check (`review_private_registry_
  * submission()`) can only refuse a submitter approving their own work if it can name the
- * submitter, and a shared team license key never could. `license`/`content_read` still exist as
- * distinct auth paths on OTHER private-registry operations — `list`/`get`/`getNamespace` remain
- * license-key (team-scoped, no person needed); `deprecate`/`undeprecate`/`getContent` were already
- * `user_jwt` before this change (SMI-5822/SMI-5905).
+ * submitter, and a shared team license key never could. `deprecate`/`undeprecate`/`getContent`
+ * were already `user_jwt` before that change (SMI-5822/SMI-5905), and SMI-6109 moved the last
+ * three holdouts — `list`/`get`/`getNamespace` — over as well. **As of SMI-6109 no MCP-path
+ * private-registry operation is license-key-scoped any more**: every `recordRegistryAudit()` call
+ * site in this package now passes `authPath: 'user_jwt'`. The `'license_key'` arm of
+ * `RegistryAuditAuthPath`/`resolveActor()` is kept deliberately — `audit_logs` still holds
+ * historical rows written on that path, and the type is what makes reading them unambiguous — but
+ * nothing writes it today.
  *
  * A pre-D-7 service-role publish (an old client, or any path that still presented only a license
  * key) left `published_by` NULL, and this module's job was to record what WAS known — the team,
  * plus a one-way fingerprint of which license key was presented — rather than fabricate a
- * plausible-looking actor. That reasoning still holds for every operation that remains
- * license-key-scoped; it just no longer describes `publish`. `license_keys.user_id` was never a
- * usable substitute either way: a team's resolvable key is the single row the checkout webhook
- * created for the *purchaser*, then shared with the team, so it names the buyer rather than the
- * caller.
+ * plausible-looking actor. That reasoning is what the `'license_key'` arm still exists to explain
+ * for those historical rows; it no longer describes any operation this package writes today.
+ * `license_keys.user_id` was never a usable substitute either way: a team's resolvable key is the
+ * single row the checkout webhook created for the *purchaser*, then shared with the team, so it
+ * names the buyer rather than the caller.
  *
  * Before this module existed, there were zero `audit_logs` writes on any private-registry path,
- * so an Enterprise customer asking "who published this" had no answer at all. `publish` now has
- * an exact one (a real `actorUserId`, same as `deprecate`/`undeprecate`); the license-key-scoped
- * operations still have the bounded one this module was built for: which key, which team, which
- * skill, when.
+ * so an Enterprise customer asking "who published this" had no answer at all. Every operation now
+ * has an exact one (a real `actorUserId`); historical rows written before their operation moved to
+ * the JWT path carry only the bounded answer this module was originally built for: which key,
+ * which team, which skill, when.
  *
  * ONE ACTOR PER PATH, NEVER THE WRONG ONE (cross-provider review finding #3).
  *
@@ -48,7 +52,7 @@
  * Fail-soft by construction: an audit write must never turn a successful publish into a failed
  * one. Failures are logged to stderr (the MCP transport's log channel) and swallowed.
  */
-import { sha256Hex } from '@skillsmith/core';
+import { createHash } from 'node:crypto';
 import { getSupabaseAdminClient } from '../supabase-client.js';
 import { readLicenseKey } from './team-resolver.js';
 /** Truncated so the audit row correlates keys without being a verification oracle for one. */
@@ -59,17 +63,34 @@ const FINGERPRINT_LENGTH = 12;
  */
 const MAX_JWT_PAYLOAD_BYTES = 8192;
 /**
- * One-way fingerprint of the presented license key.
+ * One-way fingerprint of the presented team credential.
  *
  * Correlates rows written by the same key (and matches nothing else) without storing the key or
  * anything that could be replayed. Returns null when no key is readable, so an absent credential
  * is recorded as absent rather than as some default bucket.
+ *
+ * SMI-6080: "the presented credential" is whatever `readLicenseKey()` resolved — a license key, or
+ * `SKILLSMITH_API_KEY` when that fallback applied. Both hash into the same `license_keys.key_hash`
+ * row, so a fingerprint stays a stable per-key correlator either way; it just no longer implies the
+ * caller configured `SKILLSMITH_LICENSE_KEY` specifically.
  */
 export function licenseKeyFingerprint(licenseKey) {
     const key = readLicenseKey(licenseKey);
     if (!key)
         return null;
-    return sha256Hex(key).slice(0, FINGERPRINT_LENGTH);
+    // codeql[js/insufficient-password-hash] Not password storage — a truncated,
+    // one-way correlation fingerprint for audit rows (see doc comment above).
+    // SMI-6080 added SKILLSMITH_API_KEY as a second possible source for `key`,
+    // which is why this line is newly flagged; the same rationale that already
+    // applies to the SKILLSMITH_LICENSE_KEY path applies unchanged to it too —
+    // both hash into the identical license_keys.key_hash lookup, and neither
+    // is ever compared against a stored hash to authenticate anything. Calls
+    // node:crypto directly (not the shared sha256Hex() journal-chain helper)
+    // so this inline suppression sits at CodeQL's actual flagged sink — going
+    // through the shared wrapper reports the alert inside journal/hash.ts
+    // instead, a generic multi-purpose utility where a blanket suppression
+    // would be both wrong (too broad) and ineffective (wrong file).
+    return createHash('sha256').update(key).digest('hex').slice(0, FINGERPRINT_LENGTH);
 }
 /**
  * Read the `sub` (user id) claim out of a Supabase access token, for audit attribution.
@@ -123,9 +144,15 @@ export async function recordRegistryAudit(event) {
     try {
         const fingerprint = licenseKeyFingerprint();
         const client = (await getSupabaseAdminClient());
-        const resource = event.version
-            ? `private_registry_skills/${event.teamId}/${event.skillId}@${event.version}`
-            : `private_registry_skills/${event.teamId}/${event.skillId}`;
+        // SMI-6109: list/namespace carry no single skillId — fall back to a team-wide (or, for
+        // namespace, teams-table) resource string rather than embedding "undefined" in it.
+        const resource = !event.skillId
+            ? event.operation === 'namespace'
+                ? `teams/${event.teamId}`
+                : `private_registry_skills/${event.teamId}`
+            : event.version
+                ? `private_registry_skills/${event.teamId}/${event.skillId}@${event.version}`
+                : `private_registry_skills/${event.teamId}/${event.skillId}`;
         const { error } = await client.from('audit_logs').insert({
             event_type: `private_registry:${event.operation}`,
             actor: resolveActor(event, fingerprint),
@@ -134,7 +161,7 @@ export async function recordRegistryAudit(event) {
             result: event.result,
             metadata: {
                 team_id: event.teamId,
-                skill_id: event.skillId,
+                skill_id: event.skillId ?? null,
                 version: event.version ?? null,
                 auth_path: event.authPath,
                 // Kept on BOTH paths: on the user_jwt path the key is no longer the actor, but "which key

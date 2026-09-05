@@ -43,12 +43,22 @@ vi.mock('@skillsmith/core/services/skill-installation-io', async (importActual) 
 // frozen at module load (`homedir()`), so a runtime HOME swap cannot redirect them —
 // mock the resolvers and point them at the per-test temp skillsDir in beforeEach.
 // `addLink` and the rest are preserved via importActual.
+//
+// ADR-139 (SMI-6274 Wave 4) / GPT-5.6-Sol PR review: install.ts no longer calls
+// `getInstallPath()` directly — it now resolves scope (global vs workspace) via
+// `resolveScopedSkillsDir()`, which reads `CLIENT_NATIVE_PATHS` directly for the
+// global branch, bypassing `getInstallPath()` entirely. Left unmocked, this
+// resolver would perform a REAL ancestor-directory walk from the test runner's
+// actual cwd — cwd-dependent test fragility, the same class a prior review round
+// on this same PR caught in a sibling CLI test file. Mocked deterministically to
+// redirect to the per-test temp skillsDir/manifest, set in beforeEach below.
 vi.mock('@skillsmith/core/install', async (importActual) => {
     const actual = await importActual();
     return {
         ...actual,
         resolveClientPath: vi.fn(),
         getInstallPath: vi.fn(),
+        resolveScopedSkillsDir: vi.fn(),
     };
 });
 describe('Install Skill Tool — Execution & Trust Tier', () => {
@@ -230,7 +240,11 @@ describe('Install Skill Tool — Execution & Trust Tier', () => {
      *  - SKILL.md fetch throws for registry-sourced skill → data quality error
      */
     describe('SMI-2722/2732: UUID install path', () => {
-        const TEST_UUID = 'a129e127-a82c-47e5-8bc5-09d7ba2e8734';
+        // SMI-6343: obviously-synthetic UUID — see the matching note in
+        // shutdown-persistence.integration.test.ts. This file wrote the OTHER
+        // leaked fixture row (`test-skill`) under the same real registry id
+        // (`addyosmani/performance`) into a real user's manifest.
+        const TEST_UUID = '00000000-6343-4000-8000-000000000002';
         const VALID_SKILL_MD = [
             '---',
             'name: test-skill',
@@ -251,6 +265,9 @@ describe('Install Skill Tool — Execution & Trust Tier', () => {
         let coreFetchAndScanOptionalFiles;
         let resolveClientPath;
         let getInstallPath;
+        // ADR-139 (SMI-6274 Wave 4): the scope resolver install.ts now calls
+        // instead of getInstallPath() directly — see the vi.mock comment above.
+        let resolveScopedSkillsDir;
         beforeAll(async () => {
             // Dynamic import after vi.mock() has been hoisted — module is already mocked
             const installModule = await import('../../src/tools/install.js');
@@ -269,6 +286,7 @@ describe('Install Skill Tool — Execution & Trust Tier', () => {
             const coreInstallModule = await import('@skillsmith/core/install');
             resolveClientPath = vi.mocked(coreInstallModule.resolveClientPath);
             getInstallPath = vi.mocked(coreInstallModule.getInstallPath);
+            resolveScopedSkillsDir = vi.mocked(coreInstallModule.resolveScopedSkillsDir);
         });
         beforeEach(() => {
             vi.clearAllMocks();
@@ -279,6 +297,19 @@ describe('Install Skill Tool — Execution & Trust Tier', () => {
             // SKILL.md fetch return explicitly.
             resolveClientPath.mockReturnValue(fsContext.skillsDir);
             getInstallPath.mockReturnValue(fsContext.skillsDir);
+            // ADR-139 (SMI-6274 Wave 4): install.ts resolves its actual write
+            // target via this resolver now, not getInstallPath() directly —
+            // redirect it to the SAME per-test temp skillsDir/manifest so this
+            // suite's real-write assertions (result.installPath.startsWith(...),
+            // fileExists(...)) still exercise the real install flow against an
+            // isolated temp directory, deterministically (global scope), instead
+            // of a real ancestor-directory walk from the test runner's cwd.
+            resolveScopedSkillsDir.mockReturnValue({
+                scope: 'global',
+                dir: fsContext.skillsDir,
+                manifestPath: path.join(fsContext.manifestDir, 'manifest.json'),
+                created: false,
+            });
             coreFetchAndScanOptionalFiles.mockResolvedValue({
                 configWarnings: [],
                 failedScans: [],

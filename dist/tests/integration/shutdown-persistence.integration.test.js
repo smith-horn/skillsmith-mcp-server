@@ -48,10 +48,18 @@ vi.mock('@skillsmith/core/install', async (importActual) => {
         ...actual,
         resolveClientPath: vi.fn(),
         getInstallPath: vi.fn(),
+        resolveScopedSkillsDir: vi.fn(),
     };
 });
 describe('SMI-5639: shutdown persistence — exact repro (integration, no subprocess)', () => {
-    const TEST_SKILL_ID = 'a129e127-a82c-47e5-8bc5-09d7ba2e8734';
+    // SMI-6343: obviously-synthetic UUID. The previous literal
+    // (`a129e127-…`) is a REAL registry skill id (`addyosmani/performance`,
+    // indexed 5 months before this test existed), so the fixture rows this test
+    // leaked into a real user's ~/.skillsmith/manifest.json claimed a live,
+    // unrelated registry identity. Any replacement must stay UUID-shaped —
+    // `parseSkillId()` (install.helpers.ts) routes 8-4-4-4-12 hex through the
+    // registry-lookup branch these tests mock.
+    const TEST_SKILL_ID = '00000000-6343-4000-8000-000000000001';
     // Genuine mcp__<server>__<tool> references, outside any fenced code block,
     // so McpReferenceExtractor treats them as high-confidence (matches the
     // real-world `linear` skill's SKILL.md referenced in the plan doc's
@@ -80,6 +88,7 @@ describe('SMI-5639: shutdown persistence — exact repro (integration, no subpro
     let coreFetchAndScanOptionalFiles;
     let resolveClientPath;
     let getInstallPath;
+    let resolveScopedSkillsDir;
     beforeAll(async () => {
         // Dynamic import after vi.mock() has been hoisted — mirrors
         // install.execution.integration.test.ts's own beforeAll pattern.
@@ -96,6 +105,7 @@ describe('SMI-5639: shutdown persistence — exact repro (integration, no subpro
         const coreInstallModule = await import('@skillsmith/core/install');
         resolveClientPath = vi.mocked(coreInstallModule.resolveClientPath);
         getInstallPath = vi.mocked(coreInstallModule.getInstallPath);
+        resolveScopedSkillsDir = vi.mocked(coreInstallModule.resolveScopedSkillsDir);
     });
     beforeEach(async () => {
         fsContext = await createTestFilesystem();
@@ -109,6 +119,17 @@ describe('SMI-5639: shutdown persistence — exact repro (integration, no subpro
         vi.clearAllMocks();
         resolveClientPath.mockReturnValue(fsContext.skillsDir);
         getInstallPath.mockReturnValue(fsContext.skillsDir);
+        // ADR-139 (SMI-6274 Wave 4): install.ts resolves its actual write target
+        // via this resolver now, not getInstallPath() directly — redirect it to
+        // the same per-test temp skillsDir/manifest so this real-write repro
+        // (the whole point of this test) stays isolated instead of falling
+        // through to a real ancestor-directory walk from the test runner's cwd.
+        resolveScopedSkillsDir.mockReturnValue({
+            scope: 'global',
+            dir: fsContext.skillsDir,
+            manifestPath: path.join(fsContext.manifestDir, 'manifest.json'),
+            created: false,
+        });
         coreFetchAndScanOptionalFiles.mockResolvedValue({
             configWarnings: [],
             failedScans: [],

@@ -221,7 +221,8 @@ export function createStubRegistryService() {
             return true;
         },
         // D-5 (get_private_registry_submissions): 'approved' rows to anyone; non-approved rows only to
-        // their own submitter or the simulated admin actor — the stub's approximation of the RPC's own
+        // their own submitter, the simulated admin actor, or (SMI-6202 Wave 1 widening) a member
+        // holding an explicit registry:approve grant — the stub's approximation of the RPC's own
         // visibility rule (see this file's header: an approximation, not a real policy).
         async submissions(teamId, status) {
             const rows = [...registry.entries()]
@@ -229,7 +230,8 @@ export function createStubRegistryService() {
                 .map(([, row]) => row)
                 .filter((row) => row.approvalStatus === 'approved' ||
                 (actor.id !== null && row.publishedBy === actor.id) ||
-                actor.isAdmin)
+                actor.isAdmin ||
+                actor.hasRegistryApproveGrant === true)
                 .map((row) => toRegistrySkill(teamId, row));
             return status ? rows.filter((s) => s.approvalStatus === status) : rows;
         },
@@ -249,11 +251,14 @@ export function createStubRegistryService() {
                 throw new Error('A private-registry review requires a signed-in user — no caller identity is set on ' +
                     'this stub. Call setActor() with a non-null id before review()/submissions().');
             }
-            // Step 3: admin-membership (`user_admin_team_ids()`), else 42501.
-            if (!actor.isAdmin) {
-                throw new Error('Only team admins can review private-registry submissions. Your account is a member ' +
-                    'of this team but not an admin — ask a team admin to run this, or have them ' +
-                    'promote you.');
+            // Step 3: admin-membership OR an explicit registry:approve grant (SMI-6202 Wave 1 widened
+            // this from a plain `user_admin_team_ids()` check to `has_team_permission(teamId,
+            // 'registry:approve')`), else 42501.
+            if (!actor.isAdmin && actor.hasRegistryApproveGrant !== true) {
+                throw new Error('Only a team admin or owner, or a holder of an explicit registry:approve grant, may ' +
+                    'review private-registry submissions. Your account is a member of this team with ' +
+                    'neither — ask a team admin to run this, have them promote you, or have them grant ' +
+                    'you registry:approve.');
             }
             // Step 4: row must exist. (Checked AFTER the admin gate, deliberately — see D-5: existence
             // is not leaked to a non-admin caller either.)

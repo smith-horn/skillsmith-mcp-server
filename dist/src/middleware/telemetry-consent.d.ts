@@ -1,5 +1,5 @@
 /**
- * Telemetry Consent Gate — SMI-5019 W2.S4
+ * Telemetry Consent Gate — SMI-5019 W2.S4, rewired by SMI-6362 §3/B-6
  *
  * For MCP-only clients (Cursor, Continue, Copilot users without a CLI install)
  * we cannot rely on a CLI first-run prompt or a VS Code toast. Per user
@@ -8,17 +8,18 @@
  *
  * This module supplies the MCP-side half of that flow:
  *
- *  1. On every tool call, resolve the calling anonymous_id's preference from
- *     `user_telemetry_preferences` (RLS-scoped via the same anon-key client
- *     used elsewhere in this package).
- *  2. If the row is missing, signal `consent_required:true` + the privacy URL
- *     in the response envelope so the client can prompt the user to open the
- *     dashboard.
- *  3. Cache the resolved state per process (Map keyed by anonymous_id) so
+ *  1. On every tool call, resolve the caller's preference by POSTing to the
+ *     already-deployed `telemetry-consent` edge function (SMI-6362 B-6 —
+ *     see the fetchConsentState doc-comment for why this replaced a direct
+ *     `user_telemetry_preferences` query keyed on an anonymous id).
+ *  2. If the row is missing (or the caller has never decided), signal
+ *     `consent_required:true` + the privacy URL in the response envelope so
+ *     the client can prompt the user to open the dashboard.
+ *  3. Cache the resolved state per process (Map keyed by the caller's id) so
  *     repeated calls within a session don't re-query, and so two parallel
- *     calls from the same unrecognized anonymous_id observe identical state.
- *  4. Suppress telemetry writes (consult `shouldEmitTelemetry`) for that
- *     anonymous_id until the preference resolves to `enabled:true`.
+ *     calls from the same id observe identical state.
+ *  4. Suppress telemetry writes (consult `shouldEmitTelemetry`) for that id
+ *     until the preference resolves to `enabled:true`.
  *
  * SMI-5016 (`packages/core/src/telemetry/wrap.ts`) and SMI-5017 (tool /
  * command dispatchers) are wave-sibling deliverables — this module

@@ -5,10 +5,9 @@
  * @see SMI-5816: Private skill registry — real implementation
  * @see ADR-129: Postgres-native (JSONB) storage + real team-auth (migration 071)
  *
- * Enables enterprise teams to publish and manage skills in a private registry
- * scoped to their organization. Both metadata and packaged content live in the
- * `private_registry_skills` Postgres table (JSONB content, not S3 — ADR-129);
- * team-scoped RLS + an in-query team_id filter on the service-role path (ADR-116).
+ * Enables enterprise teams to publish and manage skills in a private registry scoped to their
+ * organization. Metadata + packaged content live in `private_registry_skills` (JSONB, not S3 —
+ * ADR-129); team-scoped RLS + an in-query team_id filter (ADR-116, SMI-6109 addendum).
  *
  * Backing service is selected at module load: the live Supabase-backed service
  * (registry-tools.live.ts) when Supabase is configured, else an in-memory stub
@@ -54,26 +53,28 @@ export function getPrivateRegistryService() {
 // Handlers
 // ============================================================================
 /**
- * Resolve team ID from license key.
+ * Resolve team ID from the team credential (license key, or API key — SMI-6080).
  *
- * SMI-4292 (finding C3): unified resolution — calls the same
- * `resolve_team_from_license` RPC as team-workspace.ts. When Supabase is
- * configured but the license key is missing/invalid, the caller receives
- * a typed error (bubbled up via thrown Error).
+ * SMI-4292 (finding C3): unified resolution — calls the same `resolve_team_from_license` RPC as
+ * team-workspace.ts. A missing/invalid credential surfaces as a typed error (thrown) when Supabase
+ * is configured; falls back to a static stub id when it is not (local dev).
  *
- * Falls back to a static stub id when Supabase is not configured (local dev).
+ * SMI-6080: `readLicenseKey()` also accepts `SKILLSMITH_API_KEY`, so an admin-granted account
+ * (which holds no signed JWT license blob) can resolve its team. Team resolution ONLY — the
+ * publish/install/submissions/approve/deprecate actions also require `skillsmith login`.
  */
 async function resolveTeamId() {
     if (!isSupabaseConfigured())
         return 'team_stub_00000000-0000-0000-0000-000000000000';
     const licenseKey = readLicenseKey();
     if (!licenseKey) {
-        throw new Error('SKILLSMITH_LICENSE_KEY is required for private registry operations. ' +
-            'Set it in your MCP server config — shell exports do not reach MCP subprocesses.');
+        throw new Error('SKILLSMITH_LICENSE_KEY or SKILLSMITH_API_KEY is required for private registry operations. ' +
+            'Set one in your MCP server config — shell exports do not reach MCP subprocesses. ' +
+            'Publishing, installing, and reviewing submissions additionally require `skillsmith login`.');
     }
     const teamId = await resolveLicenseTeamId(licenseKey);
     if (!teamId) {
-        throw new Error('Unable to resolve team from license key. Ensure the key is active and attached to an Enterprise-tier subscription.');
+        throw new Error('Unable to resolve team from the configured key. Ensure SKILLSMITH_LICENSE_KEY or SKILLSMITH_API_KEY is active and attached to an Enterprise-tier subscription.');
     }
     return teamId;
 }
@@ -93,28 +94,21 @@ async function executePrivateRegistryPublishImpl(input, _context) {
             error: err instanceof Error ? err.message : 'Failed to resolve team from license key.',
         };
     }
-    // SMI-5852 UX pre-check: the DB trigger (enforce_private_skill_namespace) is the
-    // actual security boundary — this only surfaces a namespace mismatch as an
-    // actionable typed error instead of a raw 23514. A lookup failure (M3, known and
-    // accepted gap — not applied this round) does NOT block the publish attempt; the
-    // trigger still enforces correctness either way.
+    // SMI-5852 UX pre-check: the DB trigger (enforce_private_skill_namespace) is the actual
+    // security boundary. getNamespace() never throws (SMI-6109) — a lookup failure resolves to
+    // `null`, so this pre-check is simply skipped and the trigger remains the sole gate.
     let skillNamespace;
-    try {
-        const namespace = await service.getNamespace(teamId);
-        if (namespace) {
-            skillNamespace = namespace;
-            const requestedNamespace = input.skillId.split('/')[0];
-            if (requestedNamespace !== namespace) {
-                return {
-                    success: false,
-                    dataSource,
-                    error: `skill_id must start with "${namespace}/" for this team's private registry namespace.`,
-                };
-            }
+    const namespace = await service.getNamespace(teamId);
+    if (namespace) {
+        skillNamespace = namespace;
+        const requestedNamespace = input.skillId.split('/')[0];
+        if (requestedNamespace !== namespace) {
+            return {
+                success: false,
+                dataSource,
+                error: `skill_id must start with "${namespace}/" for this team's private registry namespace.`,
+            };
         }
-    }
-    catch {
-        // Lookup failure — skip the pre-check, let the DB trigger be the sole gate.
     }
     // Service errors (immutability conflict, size cap, missing SKILL.md, missing
     // service-role key) surface as typed {success:false} results, not exceptions.
@@ -235,11 +229,13 @@ async function executePrivateRegistryManageImpl(input, context) {
                     // affects this skillId's currently-APPROVED row(s) — a `pending`/`rejected` sibling
                     // version, if one exists, is untouched by this call and can still be independently
                     // approved and installed later, regardless of this deprecation. And the
-                    // `includeDeprecated:true` opt-in is NOT admin-gated — `list()` runs on the
-                    // service-role/license-key path with no `auth.uid()` at all (see
-                    // `registry-tools.live.reads.ts`'s own doc comment on `listSkills()`), so any team member
-                    // holding the shared license key can pass it, not only a team admin.
-                    message: `Skill "${input.skillId}" has been deprecated. Its approved version(s) will no longer be returned by list, get, or install — even by an exact version — for any team member; a separate pending or rejected version of this skillId, if one exists, is unaffected. Anyone holding this team's license key can still see deprecated versions via private_registry_manage {action:'list', includeDeprecated:true} — this is not restricted to team admins.`,
+                    // `includeDeprecated:true` opt-in is NOT admin-gated — it is a plain, unauthenticated
+                    // query parameter on `list()`, checked nowhere against role (see
+                    // `registry-tools.live.reads.ts`'s own doc comment on `listSkills()`), so any team
+                    // member can pass it, not only a team admin. Since SMI-6109, `list()` runs on the
+                    // signed-in user's own JWT, not the shared license key — so the message below says
+                    // "signed-in team member," not "anyone holding the license key."
+                    message: `Skill "${input.skillId}" has been deprecated. Its approved version(s) will no longer be returned by list, get, or install — even by an exact version — for any team member; a separate pending or rejected version of this skillId, if one exists, is unaffected. Any signed-in team member can still see deprecated versions via private_registry_manage {action:'list', includeDeprecated:true} — this is not restricted to team admins.`,
                 };
             }
             case 'undeprecate': {
@@ -271,10 +267,14 @@ async function executePrivateRegistryManageImpl(input, context) {
             case 'namespace': {
                 const namespace = await service.getNamespace(teamId);
                 if (!namespace) {
+                    // getNamespace() never throws, so "not logged in" and "genuinely unconfigured" both
+                    // collapse to this one message (unlike list/get's actionable login error) — hinting at
+                    // login here is a partial fix for that UX gap (SMI-6109 cross-provider review).
                     return {
                         success: false,
                         dataSource,
-                        error: "Unable to resolve this team's private registry namespace.",
+                        error: "Unable to resolve this team's private registry namespace. If you haven't run " +
+                            '`skillsmith login` yet, do that and try again.',
                     };
                 }
                 return {

@@ -198,6 +198,8 @@ describe('recommend.helpers', () => {
                 riskScore: 15,
                 findingsCount: 2,
                 scannedAt: '2026-07-01T00:00:00Z',
+                scanCoverageIncomplete: false,
+                scanCoverageNote: null,
             });
         });
         it('never coerces a real null riskScore to 0 once scannedAt is set (scanned-no-verdict case)', () => {
