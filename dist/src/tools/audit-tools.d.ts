@@ -71,6 +71,11 @@ export type SiemExportInput = z.infer<typeof siemExportInputSchema>;
 export declare const auditExportToolSchema: {
     name: "audit_export";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {
@@ -96,6 +101,11 @@ export declare const auditExportToolSchema: {
 export declare const auditQueryToolSchema: {
     name: "audit_query";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {
@@ -134,6 +144,11 @@ export declare const auditQueryToolSchema: {
 export declare const siemExportToolSchema: {
     name: "siem_export";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

@@ -99,6 +99,11 @@ export declare const applyManifestReconcileInputSchema: z.ZodEffects<z.ZodObject
 export declare const applyManifestReconcileToolSchema: {
     name: string;
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

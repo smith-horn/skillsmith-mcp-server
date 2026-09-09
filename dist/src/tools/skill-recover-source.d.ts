@@ -42,6 +42,11 @@ export type SkillRecoverSourceValidatedInput = z.infer<typeof skillRecoverSource
 export declare const skillRecoverSourceToolSchema: {
     name: string;
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

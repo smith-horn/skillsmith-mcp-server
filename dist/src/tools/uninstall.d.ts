@@ -71,6 +71,11 @@ export declare function listInstalledSkills(): Promise<string[]>;
 export declare const uninstallTool: {
     name: string;
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

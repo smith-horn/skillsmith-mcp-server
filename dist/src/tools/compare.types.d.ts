@@ -89,6 +89,11 @@ export interface CompareResponse {
 export declare const compareToolSchema: {
     name: string;
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

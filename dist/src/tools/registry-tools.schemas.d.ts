@@ -75,6 +75,11 @@ export type PrivateRegistryManageInput = z.infer<typeof privateRegistryManageInp
 export declare const privateRegistryPublishToolSchema: {
     name: "private_registry_publish";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {
@@ -104,6 +109,11 @@ export declare const privateRegistryPublishToolSchema: {
 export declare const privateRegistryManageToolSchema: {
     name: "private_registry_manage";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

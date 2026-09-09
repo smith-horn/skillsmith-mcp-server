@@ -62,6 +62,11 @@ export type SsoSettingsInput = z.infer<typeof ssoSettingsInputSchema>;
 export declare const configureSsoToolSchema: {
     name: "configure_sso";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {
@@ -99,6 +104,11 @@ export declare const configureSsoToolSchema: {
 export declare const ssoSettingsToolSchema: {
     name: "sso_settings";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

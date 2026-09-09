@@ -41,4 +41,21 @@ export declare function detectClaudeMdModification(body: string): string[];
  * @returns Array of dependency-related validation warnings
  */
 export declare function validateDependencies(metadata: Record<string, unknown>, content: string): ValidationError[];
+/**
+ * SMI-6472: Validate that a skill's frontmatter `name` matches its
+ * enclosing directory, per the Agent Skills spec.
+ *
+ * `skillPath` is the tool's original `skill_path` input, not the resolved
+ * `SKILL.md` file path. In both accepted input shapes the enclosing
+ * directory IS the skill directory:
+ *   - `isDirectory === true`: `skillPath` already points at the skill
+ *     directory, so compare against `basename(skillPath)`.
+ *   - `isDirectory === false`: `skillPath` points directly at a
+ *     `.../my-skill/SKILL.md` file, so compare against
+ *     `basename(dirname(skillPath))`.
+ *
+ * Returns no errors when `name` is missing or not a string — validateMetadata
+ * already reports that case, and double-reporting would be noise.
+ */
+export declare function validateNameMatchesDirectory(name: unknown, skillPath: string, isDirectory: boolean): ValidationError[];
 //# sourceMappingURL=validate.helpers.d.ts.map

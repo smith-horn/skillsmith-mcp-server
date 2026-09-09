@@ -49,9 +49,23 @@ function createMonthlyQuotaExceededResponse(err) {
         isError: true,
     };
 }
-export function ok(result) {
+/**
+ * Shared MCP tool response wrapper — ~30 of the 43 tools return through this
+ * (directly from `tool-dispatch.ts`, or indirectly via `withLicenseAndQuota`
+ * below). `structuredContent` is opt-in (default omitted) rather than
+ * always-on: emitting it unconditionally would change the wire shape of
+ * every one of those ~30 tools' responses, including the ~40 across the
+ * whole server that declare no `outputSchema` at all — out of scope for this
+ * wave and needless risk for callers that never asked for it. Stays a
+ * stateless pure function (no module-level mutable state) since it runs on
+ * every concurrent tool call.
+ */
+export function ok(result, options) {
     return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        ...(options?.structuredContent === true
+            ? { structuredContent: result }
+            : {}),
     };
 }
 export function errResponse(response) {

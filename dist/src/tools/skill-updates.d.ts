@@ -79,6 +79,11 @@ export interface CheckUpdatesResponse {
 export declare const skillUpdatesToolSchema: {
     name: "skill_updates";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

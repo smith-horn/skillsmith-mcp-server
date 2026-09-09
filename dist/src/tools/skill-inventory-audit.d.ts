@@ -54,6 +54,11 @@ export type SkillInventoryAuditValidatedInput = z.infer<typeof skillInventoryAud
 export declare const skillInventoryAuditToolSchema: {
     name: string;
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

@@ -88,6 +88,11 @@ export interface ShareSkillResult {
 export declare const teamWorkspaceToolSchema: {
     name: string;
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {
@@ -115,6 +120,11 @@ export declare const teamWorkspaceToolSchema: {
 export declare const shareSkillToolSchema: {
     name: string;
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

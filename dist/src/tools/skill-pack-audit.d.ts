@@ -86,6 +86,11 @@ export interface SkillPackAuditResponse {
 export declare const skillPackAuditToolSchema: {
     name: "skill_pack_audit";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

@@ -22,6 +22,11 @@ import type { ToolContext } from '../context.js';
 export declare const indexLocalToolSchema: {
     name: string;
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

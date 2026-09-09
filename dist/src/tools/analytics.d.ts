@@ -72,6 +72,11 @@ export type UsageReportInput = z.infer<typeof usageReportInputSchema>;
 export declare const teamAnalyticsDashboardToolSchema: {
     name: "team_analytics_dashboard";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {
@@ -86,6 +91,11 @@ export declare const teamAnalyticsDashboardToolSchema: {
 export declare const teamUsageReportToolSchema: {
     name: "team_usage_report";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {
@@ -105,6 +115,11 @@ export declare const teamUsageReportToolSchema: {
 export declare const analyticsDashboardToolSchema: {
     name: "analytics_dashboard";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {
@@ -123,6 +138,11 @@ export declare const analyticsDashboardToolSchema: {
 export declare const usageReportToolSchema: {
     name: "usage_report";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

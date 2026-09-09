@@ -30,7 +30,7 @@ import { scanBundledSiblings } from './validate-bundled-scan.js';
 import { scanTyposquatName } from './validate-typosquat-scan.js';
 import { validateInputSchema } from './validate.types.js';
 // Import helpers
-import { parseYamlFrontmatter, hasPathTraversal, validateMetadata, detectClaudeMdModification, validateDependencies, } from './validate.helpers.js';
+import { parseYamlFrontmatter, hasPathTraversal, validateMetadata, validateNameMatchesDirectory, detectClaudeMdModification, validateDependencies, } from './validate.helpers.js';
 export { validateInputSchema, validateToolSchema } from './validate.types.js';
 /**
  * Execute skill validation.
@@ -99,6 +99,9 @@ async function executeValidateImpl(input, _context) {
     }
     else {
         errors.push(...validateMetadata(metadata, strict));
+        // SMI-6472: frontmatter `name` must match the skill's
+        // enclosing directory, per the Agent Skills spec.
+        errors.push(...validateNameMatchesDirectory(metadata.name, skill_path, isDirectory));
     }
     // SMI-2441: Check if skill modifies CLAUDE.md
     const secondDelimiter = content.indexOf('---', 3);

@@ -8,7 +8,7 @@
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListToolsRequestSchema, } from '@modelcontextprotocol/sdk/types.js';
 // SMI-2208: Use async context for WASM fallback support
 // SMI-5981: buildDbInitializedLogMessage prints the actually-resolved DB path.
 import { getToolContextAsync, buildDbInitializedLogMessage } from './context.js';
@@ -77,7 +77,7 @@ import { resolveStartupFlag } from './cli-flags.js';
 // see middleware/toolProfile.ts for the full contract.
 import { filterToolsForAgentProfile } from './middleware/toolProfile.js';
 // Package version - keep in sync with package.json
-const PACKAGE_VERSION = '0.7.13';
+const PACKAGE_VERSION = '0.7.14';
 const PACKAGE_NAME = '@skillsmith/mcp-server';
 const logger = createLogger('mcp', { version: PACKAGE_VERSION }); // SMI-5615
 import { installBundledSkills, installUserDocs } from './onboarding/install-assets.js';
@@ -155,11 +155,23 @@ const server = new Server({
 // Handle list tools request
 server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
-        tools: filterToolsForAgentProfile(toolDefinitions).map((tool) => ({
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema,
-        })),
+        tools: filterToolsForAgentProfile(toolDefinitions).map((tool) => {
+            // This `.map()` defines the ENTIRE wire-visible tool shape — a field
+            // added to a tool's schema constant (e.g. `title`/`annotations`) is
+            // otherwise invisible to MCP clients unless it is also read and
+            // re-emitted here. Each optional field is spread in only when actually
+            // present, so we never emit `title: undefined` / `annotations: undefined`
+            // on tools that don't define them.
+            const meta = tool;
+            return {
+                name: tool.name,
+                description: tool.description,
+                inputSchema: tool.inputSchema,
+                ...(meta.title !== undefined ? { title: meta.title } : {}),
+                ...(meta.annotations !== undefined ? { annotations: meta.annotations } : {}),
+                ...(meta.outputSchema !== undefined ? { outputSchema: meta.outputSchema } : {}),
+            };
+        }),
     };
 });
 // Handle tool calls — request handling delegated to call-tool-handler.ts

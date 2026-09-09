@@ -92,6 +92,11 @@ export declare const applyNamespaceRenameInputSchema: z.ZodEffects<z.ZodObject<{
 export declare const applyNamespaceRenameToolSchema: {
     name: string;
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

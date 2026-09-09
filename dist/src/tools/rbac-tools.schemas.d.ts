@@ -111,6 +111,11 @@ export declare const PERMISSION_LIST: string;
 export declare const rbacManageToolSchema: {
     name: "rbac_manage";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {
@@ -141,6 +146,11 @@ export declare const rbacManageToolSchema: {
 export declare const rbacAssignRoleToolSchema: {
     name: "rbac_assign_role";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {
@@ -165,6 +175,11 @@ export declare const rbacAssignRoleToolSchema: {
 export declare const rbacCreatePolicyToolSchema: {
     name: "rbac_create_policy";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

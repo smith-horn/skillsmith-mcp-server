@@ -40,12 +40,198 @@ export declare const getSkillInputSchema: z.ZodObject<{
 export declare const getSkillToolSchema: {
     name: string;
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {
             id: {
                 type: string;
                 description: string;
+            };
+        };
+        required: string[];
+    };
+    outputSchema: {
+        type: "object";
+        properties: {
+            skill: {
+                type: string;
+                properties: {
+                    id: {
+                        type: string;
+                    };
+                    name: {
+                        type: string;
+                    };
+                    description: {
+                        type: string;
+                    };
+                    author: {
+                        type: string;
+                    };
+                    repository: {
+                        type: string;
+                    };
+                    installable: {
+                        type: string;
+                    };
+                    version: {
+                        type: string;
+                    };
+                    category: {
+                        type: string;
+                    };
+                    trustTier: {
+                        type: string;
+                    };
+                    score: {
+                        type: string;
+                    };
+                    scoreBreakdown: {
+                        type: string;
+                        properties: {
+                            quality: {
+                                type: string;
+                            };
+                            popularity: {
+                                type: string;
+                            };
+                            maintenance: {
+                                type: string;
+                            };
+                            security: {
+                                type: string;
+                            };
+                            documentation: {
+                                type: string;
+                            };
+                        };
+                    };
+                    tags: {
+                        type: string;
+                        items: {
+                            type: string;
+                        };
+                    };
+                    installCommand: {
+                        type: string;
+                    };
+                    security: {
+                        type: string;
+                        properties: {
+                            passed: {
+                                type: string[];
+                            };
+                            riskScore: {
+                                type: string[];
+                            };
+                            findingsCount: {
+                                type: string;
+                            };
+                            scannedAt: {
+                                type: string[];
+                            };
+                            scanCoverageIncomplete: {
+                                type: string;
+                            };
+                            scanCoverageNote: {
+                                type: string[];
+                            };
+                        };
+                    };
+                    createdAt: {
+                        type: string;
+                    };
+                    updatedAt: {
+                        type: string;
+                    };
+                    license: {
+                        type: string[];
+                    };
+                };
+                required: string[];
+            };
+            installCommand: {
+                type: string;
+            };
+            content: {
+                type: string;
+            };
+            timing: {
+                type: string;
+                properties: {
+                    totalMs: {
+                        type: string;
+                    };
+                };
+                required: string[];
+            };
+            also_installed: {
+                type: string;
+                items: {
+                    type: string;
+                    properties: {
+                        skillId: {
+                            type: string;
+                        };
+                        name: {
+                            type: string;
+                        };
+                        description: {
+                            type: string;
+                        };
+                        author: {
+                            type: string;
+                        };
+                        installCount: {
+                            type: string;
+                        };
+                    };
+                    required: string[];
+                };
+            };
+            dependencies: {
+                type: string;
+                items: {
+                    type: string;
+                    properties: {
+                        id: {
+                            type: string;
+                        };
+                        skill_id: {
+                            type: string;
+                        };
+                        dep_type: {
+                            type: string;
+                        };
+                        dep_target: {
+                            type: string;
+                        };
+                        dep_version: {
+                            type: string[];
+                        };
+                        dep_source: {
+                            type: string;
+                        };
+                        confidence: {
+                            type: string[];
+                        };
+                        metadata: {
+                            type: string[];
+                        };
+                        created_at: {
+                            type: string;
+                        };
+                        updated_at: {
+                            type: string;
+                        };
+                    };
+                    required: string[];
+                };
             };
         };
         required: string[];

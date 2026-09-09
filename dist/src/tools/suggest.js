@@ -56,6 +56,8 @@ export const suggestInputSchema = z.object({
 export const suggestToolSchema = {
     name: 'skill_suggest',
     description: 'Proactively suggest relevant skills based on current context (files, commands, errors, project structure). Counts against your monthly API quota (Community: 100/mo — see www.skillsmith.app/pricing).',
+    title: 'Suggest Skills',
+    annotations: { readOnlyHint: true, destructiveHint: false },
     inputSchema: {
         type: 'object',
         properties: {

@@ -114,6 +114,8 @@ export const rbacManageToolSchema = {
         'reset_role_permission. Roles are fixed (owner, admin, member) — owners always hold every ' +
         `permission and cannot be narrowed. Configurable permissions: ${PERMISSION_LIST}. ` +
         'Requires the team:manage_rbac permission and Enterprise tier (rbac feature).',
+    title: 'Manage RBAC Roles',
+    annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
         type: 'object',
         properties: {
@@ -146,6 +148,8 @@ export const rbacAssignRoleToolSchema = {
     description: "Assign or revoke a team member's role, or list current members and their roles. Roles are " +
         'fixed: admin or member (owner is managed separately and can never be changed here). ' +
         'Requires the team:manage_rbac permission and Enterprise tier (rbac feature).',
+    title: 'Assign RBAC Role',
+    annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
         type: 'object',
         properties: {
@@ -173,6 +177,8 @@ export const rbacCreatePolicyToolSchema = {
         `"resource:action" permission grants for one role, delete clears them, list shows the ` +
         `overrides currently set. Valid expansions: ${PERMISSION_LIST}. ` +
         'Requires the team:manage_rbac permission and Enterprise tier (rbac feature).',
+    title: 'Create RBAC Policy',
+    annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
         type: 'object',
         properties: {

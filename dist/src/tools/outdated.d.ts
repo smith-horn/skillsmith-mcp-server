@@ -113,6 +113,11 @@ export interface OutdatedResponse {
 export declare const outdatedToolSchema: {
     name: "skill_outdated";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

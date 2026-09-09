@@ -72,6 +72,8 @@ export const configureSsoToolSchema = {
         'Actions: set (store IdP config), test (connection test), remove (clear config), ' +
         'claim_domain (issue a DNS TXT verification token), verify_domain (check the TXT record). ' +
         'Requires Enterprise tier (sso_saml feature).',
+    title: 'Configure SSO',
+    annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
         type: 'object',
         properties: {
@@ -110,6 +112,8 @@ export const ssoSettingsToolSchema = {
     name: 'sso_settings',
     description: 'View current SSO/SAML configuration for your organization. ' +
         'Requires Enterprise tier (sso_saml feature).',
+    title: 'View SSO Settings',
+    annotations: { readOnlyHint: true, destructiveHint: false },
     inputSchema: {
         type: 'object',
         properties: {

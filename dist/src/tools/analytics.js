@@ -66,6 +66,8 @@ export const teamAnalyticsDashboardToolSchema = {
     name: 'team_analytics_dashboard',
     description: 'View team usage analytics: per-user tool usage counts, top tools, and daily trend. ' +
         'Requires Team tier (usage_analytics feature).',
+    title: 'View Team Analytics Dashboard',
+    annotations: { readOnlyHint: true, destructiveHint: false },
     inputSchema: {
         type: 'object',
         properties: {
@@ -81,6 +83,8 @@ export const teamUsageReportToolSchema = {
     name: 'team_usage_report',
     description: 'Generate a weekly/monthly usage summary with period-over-period comparison. ' +
         'Requires Team tier (usage_analytics feature).',
+    title: 'View Team Usage Report',
+    annotations: { readOnlyHint: true, destructiveHint: false },
     inputSchema: {
         type: 'object',
         properties: {
@@ -101,6 +105,8 @@ export const analyticsDashboardToolSchema = {
     name: 'analytics_dashboard',
     description: 'Enterprise analytics dashboard: recommendation accuracy, skill usage trends, ' +
         'team-wide aggregation. Requires Enterprise tier (advanced_analytics feature).',
+    title: 'View Analytics Dashboard',
+    annotations: { readOnlyHint: true, destructiveHint: false },
     inputSchema: {
         type: 'object',
         properties: {
@@ -120,6 +126,8 @@ export const usageReportToolSchema = {
     name: 'usage_report',
     description: 'Comprehensive enterprise usage report with all metrics. ' +
         'Requires Enterprise tier (advanced_analytics feature).',
+    title: 'View Usage Report',
+    annotations: { readOnlyHint: true, destructiveHint: false },
     inputSchema: {
         type: 'object',
         properties: {

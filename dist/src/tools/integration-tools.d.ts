@@ -54,6 +54,11 @@ export type ApiKeyManageInput = z.infer<typeof apiKeyManageInputSchema>;
 export declare const webhookConfigureToolSchema: {
     name: "webhook_configure";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {
@@ -88,6 +93,11 @@ export declare const webhookConfigureToolSchema: {
 export declare const apiKeyManageToolSchema: {
     name: "api_key_manage";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

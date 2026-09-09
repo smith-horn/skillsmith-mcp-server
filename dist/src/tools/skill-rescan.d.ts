@@ -114,6 +114,11 @@ export interface SkillRescanResponse {
 export declare const skillRescanToolSchema: {
     name: "skill_rescan";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

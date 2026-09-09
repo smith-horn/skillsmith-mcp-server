@@ -34,6 +34,11 @@ export interface PublishPrivateResult {
 export declare const publishPrivateToolSchema: {
     name: string;
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

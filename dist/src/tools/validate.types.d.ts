@@ -56,6 +56,11 @@ export interface ValidateResponse {
 export declare const validateToolSchema: {
     name: string;
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {
@@ -67,6 +72,49 @@ export declare const validateToolSchema: {
                 type: string;
                 description: string;
                 default: boolean;
+            };
+        };
+        required: string[];
+    };
+    outputSchema: {
+        type: "object";
+        properties: {
+            valid: {
+                type: string;
+            };
+            errors: {
+                type: string;
+                items: {
+                    type: string;
+                    properties: {
+                        field: {
+                            type: string;
+                        };
+                        message: {
+                            type: string;
+                        };
+                        severity: {
+                            type: string;
+                            enum: string[];
+                        };
+                    };
+                    required: string[];
+                };
+            };
+            metadata: {
+                type: string[];
+            };
+            path: {
+                type: string;
+            };
+            timing: {
+                type: string;
+                properties: {
+                    totalMs: {
+                        type: string;
+                    };
+                };
+                required: string[];
             };
         };
         required: string[];

@@ -52,11 +52,16 @@ export async function dispatchToolCall(name, args, toolContext, licenseMiddlewar
     switch (name) {
         case 'search': {
             const input = (args ?? {});
-            return ok(await executeSearch(input, toolContext));
+            // SMI-6472 Wave 3: `search` declares an `outputSchema` (searchToolSchema)
+            // — opt in to structuredContent so the MCP SDK Client's automatic
+            // validation doesn't hard-throw ("declared schema but no
+            // structuredContent") on every call.
+            return ok(await executeSearch(input, toolContext), { structuredContent: true });
         }
         case 'get_skill': {
             const input = (args ?? {});
-            return ok(await executeGetSkill(input, toolContext));
+            // SMI-6472 Wave 3: get_skill declares an outputSchema (getSkillToolSchema).
+            return ok(await executeGetSkill(input, toolContext), { structuredContent: true });
         }
         case 'install_skill':
             // SMI-4288 / #599: forward raw args; installSkill() performs Zod
@@ -79,7 +84,8 @@ export async function dispatchToolCall(name, args, toolContext, licenseMiddlewar
             const parsed = safeParseOrError(validateInputSchema, args, 'skill_validate');
             if (!parsed.ok)
                 return parsed.response;
-            return ok(await executeValidate(parsed.data, toolContext));
+            // SMI-6472 Wave 3: skill_validate declares an outputSchema (validateToolSchema).
+            return ok(await executeValidate(parsed.data, toolContext), { structuredContent: true });
         }
         case 'skill_compare': {
             const parsed = safeParseOrError(compareInputSchema, args, 'skill_compare');

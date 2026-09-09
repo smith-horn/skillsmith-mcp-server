@@ -53,6 +53,11 @@ export interface SkillDiffResponse {
 export declare const skillDiffToolSchema: {
     name: "skill_diff";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

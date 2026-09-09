@@ -33,6 +33,11 @@ export type ComplianceReportInput = z.infer<typeof complianceReportInputSchema>;
 export declare const complianceReportToolSchema: {
     name: "compliance_report";
     description: string;
+    title: string;
+    annotations: {
+        readOnlyHint: boolean;
+        destructiveHint: boolean;
+    };
     inputSchema: {
         type: "object";
         properties: {

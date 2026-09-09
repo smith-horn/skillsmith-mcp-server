@@ -53,6 +53,8 @@ export const skillUpdatesToolSchema = {
     description: 'Check installed skills for available updates by comparing locally-recorded content hashes ' +
         'against the current registry state. Requires Individual tier or higher. ' +
         'Returns a list of skills with their installed vs. latest hash and whether an update is available.',
+    title: 'Check Skill Updates',
+    annotations: { readOnlyHint: true, destructiveHint: false },
     inputSchema: {
         type: 'object',
         properties: {

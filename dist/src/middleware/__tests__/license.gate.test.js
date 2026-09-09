@@ -11,7 +11,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ApiClientError, SkillsmithError, ErrorCodes } from '@skillsmith/core';
 import { runWithEmissionGate, withTelemetry, initializePostHog, shutdownPostHog, getPostHog, } from '@skillsmith/core/telemetry';
-import { createProfileIncompleteResponse, withLicenseAndQuota, MCP_MONTHLY_QUOTA_EXCEEDED_CODE, } from '../license.gate.js';
+import { createProfileIncompleteResponse, withLicenseAndQuota, MCP_MONTHLY_QUOTA_EXCEEDED_CODE, ok, } from '../license.gate.js';
 import { resolveConsent, annotateResponseWithConsent, TELEMETRY_PRIVACY_URL, _resetConsentCacheForTests, } from '../telemetry-consent.js';
 import { z } from 'zod';
 /**
@@ -109,6 +109,31 @@ describe('license.gate', () => {
         expect(quotaInfo.limit).toBe(1000);
         expect(quotaInfo.tier).toBe('community');
         expect(quotaInfo.resetsAt).toBe(resetsAt);
+    });
+    // SMI-6472 Wave 3: ok()'s opt-in `structuredContent` parameter.
+    it('OK-1: ok() omits structuredContent by default (backward-compat)', () => {
+        const result = ok({ foo: 'bar', total: 2 });
+        expect(result).not.toHaveProperty('structuredContent');
+        expect(result.content).toEqual([
+            { type: 'text', text: JSON.stringify({ foo: 'bar', total: 2 }, null, 2) },
+        ]);
+    });
+    it('OK-2: ok() omits structuredContent when explicitly passed false', () => {
+        const result = ok({ foo: 'bar' }, { structuredContent: false });
+        expect(result).not.toHaveProperty('structuredContent');
+    });
+    it('OK-3: ok() attaches the exact result object as structuredContent when opted in', () => {
+        const payload = { foo: 'bar', nested: { n: 1 } };
+        const result = ok(payload, { structuredContent: true });
+        expect(result.structuredContent).toEqual(payload);
+        // The text block is unaffected by the opt-in -- same JSON.stringify output
+        // either way, so existing callers reading `content[0].text` see no change.
+        expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(payload, null, 2) }]);
+    });
+    it('OK-4: the default (no options) output is byte-identical whether or not options is opted out explicitly', () => {
+        const payload = { a: 1, b: [1, 2, 3] };
+        expect(ok(payload)).toEqual(ok(payload, undefined));
+        expect(ok(payload)).toEqual(ok(payload, {}));
     });
 });
 // ============================================================================

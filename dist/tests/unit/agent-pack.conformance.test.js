@@ -12,7 +12,8 @@
  * drift-gate tests in agent-pack.assets.test.ts or agent-pack.test.ts.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseToml } from 'smol-toml';
@@ -39,8 +40,29 @@ function readArtifact(relativePath) {
 describe('agent-pack conformance — committed artifacts', () => {
     describe('1. in-repo validator conformance (SKILL.md)', () => {
         it('runs the repo validator on committed SKILL.md and reports valid with zero warnings', async () => {
-            const skillPath = join(assetsDir, 'SKILL.md');
-            const result = await executeValidate({ skill_path: skillPath, strict: false });
+            // SMI-6472: validate the pack in its INSTALLED layout, not its
+            // source-tree location. `skill_validate` now enforces the Agent Skills
+            // spec requirement that frontmatter `name` match the enclosing
+            // directory. The committed asset lives under `src/assets/agent-pack/`
+            // (a monorepo source-tree convention) but is always installed to
+            // `<clientNativePath>/<AGENT_PACK_SKILL_NAME>/SKILL.md` — see
+            // `agent-pack-installer.ts` — so `skillsmith-agent` IS its real
+            // directory name everywhere it actually ships. Staging it under that
+            // name here asserts what this suite means to assert: the artifact a
+            // user receives is spec-valid. Validating the source path instead
+            // would measure the monorepo's folder naming, not the shipped skill.
+            const stageRoot = mkdtempSync(join(tmpdir(), 'agent-pack-conformance-'));
+            const stagedSkillDir = join(stageRoot, AGENT_PACK_SKILL_NAME);
+            mkdirSync(stagedSkillDir, { recursive: true });
+            const skillPath = join(stagedSkillDir, 'SKILL.md');
+            writeFileSync(skillPath, readArtifact('SKILL.md'));
+            let result;
+            try {
+                result = await executeValidate({ skill_path: skillPath, strict: false });
+            }
+            finally {
+                rmSync(stageRoot, { recursive: true, force: true });
+            }
             const errors = result.errors.filter((e) => e.severity === 'error');
             const warnings = result.errors.filter((e) => e.severity === 'warning');
             if (errors.length > 0) {

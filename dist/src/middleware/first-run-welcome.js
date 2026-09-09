@@ -43,6 +43,7 @@
  * after consumption (or when nothing is pending) cheap no-ops, so it's safe
  * to call unconditionally.
  */
+import { spliceStructured } from './structured-content.js';
 /**
  * Per-process pending-welcome state. Same singleton-within-the-process
  * approach as `telemetry-consent.ts`'s module-level `consentCache` /
@@ -141,7 +142,7 @@ export function annotateResponseWithWelcome(response) {
     // Consume ONLY now — after the splice has genuinely succeeded. Every
     // early return above leaves `pendingWelcome` untouched.
     pendingWelcome = null;
-    return { ...response, content: nextContent };
+    return { ...response, content: nextContent, ...spliceStructured(response, annotated) };
 }
 /**
  * Test-only helper. Not exported from the package index.
