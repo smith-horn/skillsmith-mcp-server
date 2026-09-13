@@ -47,12 +47,13 @@ import { checkForConflicts } from './install.conflict.js'
 // external import path (used directly by SMI-4737's tests) is unaffected.
 import {
   runNamespaceGate,
+  attachGateProblems,
   buildPreflightCandidate,
   resolveCallerTier,
   readAuditModeOverride,
   extractSkillName,
 } from './install.namespace-gate.js'
-import type { CandidateSkill } from '../audit/install-preflight.js'
+import { describeThrown, type CandidateSkill } from '../audit/install-preflight.js'
 import * as path from 'path'
 
 export { extractSkillName } from './install.namespace-gate.js'
@@ -178,10 +179,10 @@ async function installSkillImpl(input: unknown, _context?: ToolContext): Promise
   try {
     candidate = buildPreflightCandidate(validInput.skillId)
   } catch (err) {
-    return buildInvalidSkillIdError(
-      validInput.skillId,
-      err instanceof Error ? err.message : String(err)
-    )
+    // SMI-6588 round 3: `extractSkillName` only ever throws an ordinary Error,
+    // so this site was already safe — routed through the shared helper anyway
+    // so no coercion in this file can drift from the others again.
+    return buildInvalidSkillIdError(validInput.skillId, describeThrown(err))
   }
   const tier = resolveCallerTier()
   const auditMode = resolveAuditMode({
@@ -242,7 +243,7 @@ async function installSkillImpl(input: unknown, _context?: ToolContext): Promise
       scopeError instanceof UnsatisfiableWorkspaceScopeError ||
       scopeError instanceof InvalidScopeValueError
     ) {
-      return buildScopeError(validInput.skillId, scopeError)
+      return attachGateProblems(buildScopeError(validInput.skillId, scopeError), gate.problems)
     }
     throw scopeError
   }
@@ -286,6 +287,9 @@ async function installSkillImpl(input: unknown, _context?: ToolContext): Promise
   // callers — outdated.ts, skill-updates.ts, updateManifestSafely) — passing
   // `scopeTarget.manifestPath` here makes this pre-flight correct for BOTH
   // scopes instead of gated to one.
+  // SMI-6585: collected here rather than swallowed, and surfaced via `tips`
+  // below alongside the fan-out failures.
+  const preflightProblems: string[] = []
   if (validInput.force && validInput.conflictAction) {
     try {
       const manifest = await loadManifest(scopeTarget.manifestPath)
@@ -328,13 +332,16 @@ async function installSkillImpl(input: unknown, _context?: ToolContext): Promise
           force: validInput.force,
         })
         if (!targetCheck.ok) {
-          return {
-            success: false,
-            skillId: validInput.skillId,
-            installPath,
-            error: targetCheck.error,
-            ...(targetCheck.tips !== undefined && { tips: targetCheck.tips }),
-          }
+          return attachGateProblems(
+            {
+              success: false,
+              skillId: validInput.skillId,
+              installPath,
+              error: targetCheck.error,
+              ...(targetCheck.tips !== undefined && { tips: targetCheck.tips }),
+            },
+            gate.problems
+          )
         }
 
         const conflictCheck = await checkForConflicts(
@@ -346,11 +353,32 @@ async function installSkillImpl(input: unknown, _context?: ToolContext): Promise
         )
 
         if (!conflictCheck.shouldProceed) {
-          return conflictCheck.earlyReturn!
+          return attachGateProblems(conflictCheck.earlyReturn!, gate.problems)
         }
       }
-    } catch {
-      // Conflict check failed; proceed with normal install
+    } catch (err) {
+      // SMI-6585: this catch predates the guard it encloses — Wave A0 moved
+      // `checkInstallTarget` inside it, turning a fail-closed guard fail-open.
+      // The install's OUTCOME is deliberately unchanged (`service.install()`
+      // runs the same target guard unconditionally before any fetch or write),
+      // so swallowing the outcome is correct; swallowing the FACT is not. The
+      // failure now rides `tips`, letting a caller tell "pre-flight passed"
+      // from "pre-flight could not be evaluated".
+      // SMI-6588: the one shared implementation, which also bounds the string
+      // (an unbounded message from an arbitrary throw site is not something to
+      // pass back to a caller). See describeThrown's own comment for why this
+      // is shared rather than written out here again.
+      const cause = describeThrown(err)
+
+      // SMI-6585 cross-model review: "was not applied" claimed more than the
+      // code can know. `checkForConflicts` can throw AFTER writing a backup,
+      // so the action may have been partially applied. Say what is true.
+      preflightProblems.push(
+        `the install pre-flight (conflict check and target guard) could not be evaluated ` +
+          `(${cause}); the install proceeded and its target was still checked by the ` +
+          `installer's own guard, but any requested conflictAction may not have been fully ` +
+          `applied.`
+      )
     }
   }
 
@@ -406,7 +434,11 @@ async function installSkillImpl(input: unknown, _context?: ToolContext): Promise
           alsoLinkFailures.push(`alsoLink to ${target}: ${warning}`)
         }
       } catch (linkErr) {
-        const message = linkErr instanceof Error ? linkErr.message : String(linkErr)
+        // SMI-6588 round 3: the fourth copy of this coercion, and the only one
+        // with no inner try/catch — a hostile value made `String()` itself
+        // throw, escaping AFTER the primary install had already succeeded and
+        // replacing a success with an exception.
+        const message = describeThrown(linkErr)
         // Best-effort fan-out — log but don't fail the install
         console.error(`[install] alsoLink to ${target} failed:`, message)
         alsoLinkFailures.push(`alsoLink to ${target} failed: ${message}`)
@@ -414,20 +446,31 @@ async function installSkillImpl(input: unknown, _context?: ToolContext): Promise
     }
   }
 
+  // SMI-6529 round 7 / SMI-6585 / SMI-6588: every non-fatal problem this
+  // function knows about rides one surface — a fan-out refusal, a conflict
+  // pre-flight that could not be evaluated, and a namespace pre-flight that
+  // never ran. None of them changes whether the install itself succeeded.
+  const nonFatalProblems = [...preflightProblems, ...gate.problems, ...alsoLinkFailures]
   const resultWithTips: InstallResult =
-    alsoLinkFailures.length > 0
-      ? { ...result, tips: [...(result.tips ?? []), ...alsoLinkFailures] }
+    nonFatalProblems.length > 0
+      ? { ...result, tips: [...(result.tips ?? []), ...nonFatalProblems] }
       : result
 
   // SMI-4588 Wave 2 PR #3: surface non-blocking namespace warnings (and
   // installComplete=true marker) on `power_user` / `governance` paths.
   // `pendingCollision` is intentionally not merged here — it is exclusive
   // to the blocking-mode early return above.
+  //
+  // SMI-6585 cross-model review: this used to REPLACE the installer's own
+  // warnings with the gate's. That is the same shape as the catch this change
+  // fixes — a line whose meaning inverts the day a producer elsewhere starts
+  // returning data it previously never did. Merge instead, as the `tips` code
+  // above does, so neither source can silently erase the other.
   if (gate.resultPatch.warnings && gate.resultPatch.warnings.length > 0) {
     return {
       ...resultWithTips,
       installComplete: gate.resultPatch.installComplete,
-      warnings: gate.resultPatch.warnings,
+      warnings: [...(resultWithTips.warnings ?? []), ...gate.resultPatch.warnings],
     }
   }
 

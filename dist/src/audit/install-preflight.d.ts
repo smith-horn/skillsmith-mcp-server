@@ -89,6 +89,21 @@ export interface RunInstallPreflightResult {
      * install caller does not re-derive it for telemetry / ledger linkage.
      */
     auditId: AuditId;
+    /**
+     * SMI-6588 cross-model review: `null` when the pre-flight actually ran —
+     * and ONLY then. A non-null string means it did not, and says why.
+     *
+     * Before this field, the catch below returned the same
+     * `warnings: [], pendingCollision: null` shape as a clean zero-flag run,
+     * so a caller could not tell "the detector found no collision" from "the
+     * detector threw." SMI-6588's first attempt added reporting one layer up
+     * in `runNamespaceGate` and missed this entirely: that outer catch cannot
+     * fire, because this one already degrades first.
+     *
+     * Required, not optional — every return site must answer it, which is how
+     * a future third return cannot quietly reintroduce the ambiguity.
+     */
+    problem: string | null;
 }
 /**
  * Run the install pre-flight. Pure function over `existingInventory` +
@@ -99,5 +114,19 @@ export interface RunInstallPreflightResult {
  * degraded shape (`warnings: []`, `pendingCollision: null`, fresh
  * `auditId`) — the install MUST proceed when the detector breaks (Edit 2).
  */
+/**
+ * The single implementation for describing a caught value. Shared by
+ * `install.namespace-gate.ts` and `install.ts` — do not hand-write another copy.
+ *
+ * `Error.message` is typed `string` but a runtime value need not honour it: an
+ * Error whose `message` is a Symbol makes a template literal throw
+ * `TypeError: Cannot convert a Symbol value to a string`, turning a
+ * non-blocking degrade into an escaped exception. `String()` is safe on a
+ * Symbol; implicit interpolation is not.
+ *
+ * Shared precisely because it was not — four hand-written copies existed, and
+ * SMI-6588's review rounds 1-3 each found another one still unfixed.
+ */
+export declare function describeThrown(err: unknown): string;
 export declare function runInstallPreflight(input: RunInstallPreflightInput): Promise<RunInstallPreflightResult>;
 //# sourceMappingURL=install-preflight.d.ts.map

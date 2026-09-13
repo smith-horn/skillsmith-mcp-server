@@ -101,6 +101,20 @@ export interface NamespaceGateOutcome {
      * path has a single shape to splat.
      */
     resultPatch: Pick<InstallResult, 'installComplete' | 'pendingCollision' | 'warnings'>;
+    /**
+     * SMI-6588: non-fatal problems this gate hit, for the caller to surface
+     * through `tips`. Empty means the gate ran; a non-empty entry means it
+     * did NOT run and says which step failed.
+     *
+     * This is deliberately NOT folded into `resultPatch.warnings`: that field
+     * is `NamespaceWarning[]` (a structured collision record), and a gate that
+     * never ran has no collision to report — it has a reason. Conflating the
+     * two is what made "found nothing" and "never looked" identical here.
+     *
+     * Non-optional on purpose. An optional field that is sometimes `undefined`
+     * reintroduces the exact ambiguity this issue exists to remove.
+     */
+    problems: string[];
 }
 /**
  * Run the namespace pre-flight + apply the mode gate. Returns a decision
@@ -108,4 +122,17 @@ export interface NamespaceGateOutcome {
  * degrade to `decision: 'proceed'` with a logged warning (Edit 2).
  */
 export declare function runNamespaceGate(input: NamespaceGateInput): Promise<NamespaceGateOutcome>;
+/**
+ * SMI-6588 cross-model review: the gate runs early in `installSkillImpl`, but
+ * its problems were merged only at the final return. Every exit between the
+ * two dropped them — a scope error, a target-guard refusal, or a conflict
+ * early return would report its own failure while silently discarding the
+ * fact that the namespace pre-flight never ran.
+ *
+ * Lives here rather than in `install.ts` because that file sits at the
+ * 500-line CI gate.
+ */
+export declare function attachGateProblems<T extends {
+    tips?: string[];
+}>(result: T, problems: string[]): T;
 //# sourceMappingURL=install.namespace-gate.d.ts.map

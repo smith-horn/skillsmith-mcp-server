@@ -188,6 +188,30 @@ function excludeSelfReinstall(existing, candidate) {
  * degraded shape (`warnings: []`, `pendingCollision: null`, fresh
  * `auditId`) — the install MUST proceed when the detector breaks (Edit 2).
  */
+/**
+ * The single implementation for describing a caught value. Shared by
+ * `install.namespace-gate.ts` and `install.ts` — do not hand-write another copy.
+ *
+ * `Error.message` is typed `string` but a runtime value need not honour it: an
+ * Error whose `message` is a Symbol makes a template literal throw
+ * `TypeError: Cannot convert a Symbol value to a string`, turning a
+ * non-blocking degrade into an escaped exception. `String()` is safe on a
+ * Symbol; implicit interpolation is not.
+ *
+ * Shared precisely because it was not — four hand-written copies existed, and
+ * SMI-6588's review rounds 1-3 each found another one still unfixed.
+ */
+export function describeThrown(err) {
+    let cause;
+    try {
+        const raw = err instanceof Error ? err.message : err;
+        cause = typeof raw === 'string' ? raw : String(raw);
+    }
+    catch {
+        cause = 'the thrown value could not be described';
+    }
+    return cause.length > 300 ? cause.slice(0, 300) + '…' : cause;
+}
 export async function runInstallPreflight(input) {
     const { existingInventory, candidate, mode, tier } = input;
     // Allocate the audit id up front so the degraded path returns a valid
@@ -213,8 +237,17 @@ export async function runInstallPreflight(input) {
         // The catch covers `excludeSelfReinstall` (rejects non-iterable
         // inputs), `synthesizeCandidateEntry`, the spread, AND
         // `detectCollisions`. Any pre-flight failure → install proceeds.
-        console.warn(`[install-preflight] detector failed (${err.message}); degrading to non-blocking pass`);
-        return { warnings: [], pendingCollision: null, auditId };
+        const cause = describeThrown(err);
+        console.warn(`[install-preflight] detector failed (${cause}); degrading to non-blocking pass`);
+        return {
+            warnings: [],
+            pendingCollision: null,
+            auditId,
+            // SMI-6588: the install still proceeds — that part was always right.
+            // What was missing is that this result is now distinguishable from a
+            // clean run instead of being byte-identical to one.
+            problem: `the namespace collision detector failed (${cause}); this skill was NOT checked for a name collision with your already-installed skills`,
+        };
     }
     // Filter to flags involving the candidate. Pre-existing collisions are
     // out of scope at install time.
@@ -229,7 +262,7 @@ export async function runInstallPreflight(input) {
         // agent's later inspection by auditId still resolves; absence of an
         // audit file would be ambiguous.
         await tryWriteAuditHistory(result);
-        return { warnings: [], pendingCollision: null, auditId };
+        return { warnings: [], pendingCollision: null, auditId, problem: null };
     }
     // SMI-4589 Wave 3: run the edit-suggester over the audit result (which
     // already contains the candidate-augmented inventory). We attach the
@@ -283,7 +316,7 @@ export async function runInstallPreflight(input) {
         }
     }
     await tryWriteAuditHistory(result);
-    return { warnings, pendingCollision, auditId };
+    return { warnings, pendingCollision, auditId, problem: null };
 }
 function buildWarningMessage(flag, candidate, suggested) {
     const reason = buildReason(flag, candidate.projectedSourcePath);
@@ -300,7 +333,8 @@ async function collectRecommendedEdits(result) {
         return new Map(recommendedEdits.map((e) => [e.collisionId, e]));
     }
     catch (err) {
-        console.warn(`[install-preflight] edit-suggester failed (${err.message}); proceeding without prose edits`);
+        // SMI-6588 round 4: a Symbol message made this literal throw, escaping.
+        console.warn(`[install-preflight] edit-suggester failed (${describeThrown(err)}); proceeding without prose edits`);
         return new Map();
     }
 }
@@ -314,7 +348,9 @@ async function tryWriteAuditHistory(result) {
         await writeAuditHistory(result);
     }
     catch (err) {
-        console.warn(`[install-preflight] writeAuditHistory failed (${err.message}); auditId will be unrecoverable but install proceeds`);
+        // SMI-6588 round 4: throwing here escaped while handling a rejection; on a
+        // preventative collision that permitted an install that should be blocked.
+        console.warn(`[install-preflight] writeAuditHistory failed (${describeThrown(err)}); auditId will be unrecoverable but install proceeds`);
     }
 }
 //# sourceMappingURL=install-preflight.js.map

@@ -72,6 +72,11 @@ describe('runInstallPreflight', () => {
         expect(result.pendingCollision).toBeNull();
         // ULID shape — bubbled from the detector through the result.
         expect(result.auditId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+        // SMI-6588: the negative control for the degrade assertion below. The
+        // three lines above are ALL satisfied by a run where the detector threw
+        // and was swallowed — that was the defect. `problem === null` is the only
+        // thing here that distinguishes this clean run from that one.
+        expect(result.problem).toBeNull();
     });
     it('returns pendingCollision on exact collision in preventative mode (case 2)', async () => {
         const c = candidate();
@@ -153,6 +158,18 @@ describe('runInstallPreflight', () => {
         expect(result.warnings).toEqual([]);
         expect(result.pendingCollision).toBeNull();
         expect(result.auditId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+        // SMI-6588 (cross-model review finding 1): the three assertions above are
+        // satisfied IDENTICALLY by case 1's clean run — which is precisely the
+        // defect. This function's catch returned a result byte-identical to
+        // "detector ran, found nothing", so every caller above it was blind to
+        // the difference. SMI-6588's first attempt added reporting one layer up
+        // in `runNamespaceGate` and could never fire, because this catch degrades
+        // first. The distinction has to be made here.
+        expect(result.problem).not.toBeNull();
+        expect(result.problem).toContain('collision detector failed');
+        // The report must name what the user actually lost, not merely that
+        // something failed.
+        expect(result.problem).toContain('NOT checked for a name collision');
     });
     it('persists audit history with the bubbled auditId (case 6)', async () => {
         // The audit-history module captures `os.homedir()` at module load, so
