@@ -10,7 +10,8 @@
  */
 /**
  * Get the Supabase anon-key client (lazy singleton).
- * Uses SUPABASE_URL/SUPABASE_ANON_KEY when set, else the production defaults (SMI-6109).
+ * Uses SUPABASE_URL/SUPABASE_ANON_KEY when set, else the production defaults (SMI-6109) — except
+ * under Vitest with no SUPABASE_URL, where that fallback throws instead (see the guard above).
  */
 export declare function getSupabaseClient(): Promise<unknown>;
 /**
@@ -31,7 +32,7 @@ export declare function getSupabaseAdminClient(): Promise<unknown>;
  * that authorizes them, rather than app-level logic that can drift from the policy.
  *
  * Uses SUPABASE_URL/SUPABASE_ANON_KEY when set, else the production defaults (SMI-6109) — same
- * fallback as getSupabaseClient() above.
+ * fallback as getSupabaseClient() above, including the same test-time guard against reaching it.
  *
  * @param accessToken - a Supabase user access token (from `skillsmith login`)
  */
@@ -41,18 +42,19 @@ export declare function getSupabaseUserClient(accessToken: string): Promise<unkn
  *
  * Deliberately NOT affected by the anon-key fallback above (SMI-6109) — see that comment for why.
  *
- * Cross-provider review correction (SMI-6109): this means the fallback does NOT make the private
- * registry usable with zero Supabase config. `registry-tools.ts`'s own module-load service
- * selection AND its `resolveTeamId()` both still gate on this exact flag, so a customer with
- * neither `SUPABASE_URL` nor `SUPABASE_ANON_KEY` set gets the in-memory STUB service, never
- * reaching `getMemberUserClient()`/the fallback at all — by design, so a genuinely unconfigured
- * host still gets fast, offline-safe stub behavior instead of a live network call against a
- * license key that was never set up. The fallback's real, narrower benefit: once a customer HAS
- * set both vars (the expected Team/Enterprise setup — see the README), a *later* drift where one
- * of the two is missing in some specific execution context (e.g. propagated inconsistently to an
- * MCP subprocess) degrades gracefully instead of failing, and — matching
- * packages/core/src/api/utils.ts's identical DEFAULT_BASE_URL pattern — the anon-key surface never
- * needs a bespoke "not configured" error path of its own.
+ * SMI-6622 correction (this flag's role narrowed — read this before assuming it gates the private
+ * registry): `registry-tools.ts`'s module-load service selection and its `resolveTeamId()` used to
+ * both gate on this exact flag, so a customer with neither `SUPABASE_URL` nor `SUPABASE_ANON_KEY`
+ * set got the in-memory STUB service and `publish` silently returned `success:true` with nothing
+ * written — the public `@skillsmith/mcp-server` package must never require Supabase env vars, and
+ * the anon-key fallback above already made the live path reachable with zero config, so that gate
+ * was actively wrong, not merely conservative. `registry-tools.ts` no longer reads this flag at
+ * all (`registry-tools.team.ts` resolves the team unconditionally instead). This flag's remaining,
+ * *narrower* role: `sso-tools`, `team-workspace`, `compliance-tools`, `integration-tools`,
+ * `rbac-tools`, and `team-resolver.ts`'s own shared `resolveLicenseTeamId()` (SMI-6623 — still used
+ * directly by some of those) each still gate their own (unrelated, still service-role-backed) live
+ * path on it, and matching `packages/core/src/api/utils.ts`'s identical `DEFAULT_BASE_URL` pattern,
+ * the anon-key surface itself never needs a bespoke "not configured" error path of its own.
  */
 export declare function isSupabaseConfigured(): boolean;
 /** Reset clients (for testing) */

@@ -119,6 +119,11 @@ vi.mock('@skillsmith/core/install', async (importOriginal) => {
     };
 });
 import { installSkill, extractSkillName } from './install.js';
+// SMI-6358: the `@skillsmith/core/install` mock above spreads `...actual` and
+// overrides only `resolveScopedSkillsDir`, so this is the REAL constant — the
+// same one `resolveClientId(undefined)` returns and therefore the same value
+// `install.ts` resolves `effectiveClient` to when no client is supplied.
+import { CANONICAL_CLIENT } from '@skillsmith/core/install';
 const HAPPY_RESULT = {
     success: true,
     skillId: 'owner/repo/test-skill',
@@ -467,7 +472,15 @@ describe('installSkill() Zod boundary guard (SMI-4288 / #599)', () => {
             // `installPath` (here `/x`), which can legitimately differ (a
             // different scope/client's directory entirely). `/mock/skills-dir` is
             // this test file's mocked `effectiveSkillsDir`.
-            expect(mockCheckForConflicts).toHaveBeenCalledWith('bare-name', '/mock/skills-dir/bare-name', expect.objectContaining({ installedSkills: expect.any(Object) }), 'overwrite', 'bare-name');
+            // SMI-6358: checkForConflicts gained a sixth `client` parameter so it keys
+            // the manifest lookup via manifestKeyFor(skillName, client) rather than by
+            // bare name — a bare-name lookup silently reads the canonical client's entry
+            // for a non-canonical install. Pinned to the imported CANONICAL_CLIENT, not
+            // expect.any(String): WHICH client is keyed is the point of that change, so
+            // a wildcard would erase what this pins. Matches the sibling coverage in
+            // tests/e2e/conflict-resolution.e2e.test.ts, which passes the same constant
+            // to this function at every call site.
+            expect(mockCheckForConflicts).toHaveBeenCalledWith('bare-name', '/mock/skills-dir/bare-name', expect.objectContaining({ installedSkills: expect.any(Object) }), 'overwrite', 'bare-name', CANONICAL_CLIENT);
         });
     });
     // SMI-4737: bound `packDomain` and `token` upstream

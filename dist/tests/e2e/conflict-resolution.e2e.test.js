@@ -14,6 +14,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { checkForConflicts, handleMergeAction } from '../../src/tools/install.conflict.js';
 import { hashContent, storeOriginal, loadOriginal, getBackupsDir, } from '../../src/tools/install.helpers.js';
+import { CANONICAL_CLIENT } from '@skillsmith/core/install';
 // Test configuration
 const TEST_DIR = join(tmpdir(), `skillsmith-e2e-conflict-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`);
 const TEST_HOME = join(TEST_DIR, 'home');
@@ -171,7 +172,7 @@ describe('E2E: conflict resolution merge flow', () => {
             const installPath = await setupInstalledSkill(MODIFIED_SKILL_CONTENT);
             const manifest = createManifestEntry();
             // Check for conflicts with cancel action
-            const result = await checkForConflicts('test-skill', installPath, manifest, 'cancel', 'test/test-skill');
+            const result = await checkForConflicts('test-skill', installPath, manifest, 'cancel', 'test/test-skill', CANONICAL_CLIENT);
             // Verify installation was aborted
             expect(result.shouldProceed).toBe(false);
             expect(result.earlyReturn).toBeDefined();
@@ -197,7 +198,7 @@ describe('E2E: conflict resolution merge flow', () => {
             const installPath = await setupInstalledSkill(MODIFIED_SKILL_CONTENT);
             const manifest = createManifestEntry();
             // Check for conflicts with overwrite action
-            const result = await checkForConflicts('test-skill', installPath, manifest, 'overwrite', 'test/test-skill');
+            const result = await checkForConflicts('test-skill', installPath, manifest, 'overwrite', 'test/test-skill', CANONICAL_CLIENT);
             // Verify proceed is allowed
             expect(result.shouldProceed).toBe(true);
             expect(result.backupPath).toBeDefined();
@@ -222,7 +223,7 @@ describe('E2E: conflict resolution merge flow', () => {
             const installPath = await setupInstalledSkill(MODIFIED_SKILL_CONTENT);
             const manifest = createManifestEntry();
             // Handle merge with non-conflicting upstream update
-            const result = await handleMergeAction('test-skill', installPath, UPSTREAM_UPDATE_CONTENT, manifest, 'test', 'test-skill', 'test/test-skill');
+            const result = await handleMergeAction('test-skill', installPath, UPSTREAM_UPDATE_CONTENT, manifest, 'test', 'test-skill', 'test/test-skill', CANONICAL_CLIENT);
             // For clean merge, should proceed with merged content
             // Note: actual merge result depends on diff algorithm
             if (result.shouldProceed && result.mergedContent) {
@@ -242,7 +243,7 @@ describe('E2E: conflict resolution merge flow', () => {
             const installPath = await setupInstalledSkill(MODIFIED_SKILL_CONTENT);
             const manifest = createManifestEntry();
             // Handle merge with conflicting upstream update
-            const result = await handleMergeAction('test-skill', installPath, CONFLICTING_UPDATE_CONTENT, manifest, 'test', 'test-skill', 'test/test-skill');
+            const result = await handleMergeAction('test-skill', installPath, CONFLICTING_UPDATE_CONTENT, manifest, 'test', 'test-skill', 'test/test-skill', CANONICAL_CLIENT);
             // For conflict merge, should stop and report
             if (!result.shouldProceed) {
                 // Conflict detected
@@ -270,7 +271,7 @@ describe('E2E: conflict resolution merge flow', () => {
             const installPath = await setupInstalledSkill(ORIGINAL_SKILL_CONTENT);
             const manifest = createManifestEntry();
             // Check for conflicts
-            const result = await checkForConflicts('test-skill', installPath, manifest, undefined, 'test/test-skill');
+            const result = await checkForConflicts('test-skill', installPath, manifest, undefined, 'test/test-skill', CANONICAL_CLIENT);
             // No modifications means proceed without action needed
             expect(result.shouldProceed).toBe(true);
             expect(result.earlyReturn).toBeUndefined();
@@ -279,7 +280,7 @@ describe('E2E: conflict resolution merge flow', () => {
             const installPath = await setupInstalledSkill(MODIFIED_SKILL_CONTENT);
             const manifest = createManifestEntry();
             // Check for conflicts WITHOUT providing action
-            const result = await checkForConflicts('test-skill', installPath, manifest, undefined, 'test/test-skill');
+            const result = await checkForConflicts('test-skill', installPath, manifest, undefined, 'test/test-skill', CANONICAL_CLIENT);
             // Should not proceed and require action
             expect(result.shouldProceed).toBe(false);
             expect(result.earlyReturn).toBeDefined();
@@ -307,7 +308,7 @@ describe('E2E: conflict resolution merge flow', () => {
                     },
                 },
             };
-            const result = await checkForConflicts('test-skill', installPath, manifest, undefined, 'test/test-skill');
+            const result = await checkForConflicts('test-skill', installPath, manifest, undefined, 'test/test-skill', CANONICAL_CLIENT);
             // Should proceed (can't detect conflicts without original hash)
             expect(result.shouldProceed).toBe(true);
         });

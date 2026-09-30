@@ -4,19 +4,24 @@
  * @see SMI-3902: Private Registry MCP Tools (original stub)
  * @see SMI-5816: Private skill registry — real implementation
  * @see ADR-129: Postgres-native (JSONB) storage + real team-auth (migration 071)
+ * @see SMI-6622: the public `@skillsmith/mcp-server` package must never need Supabase env vars —
+ *   service selection and team resolution below are NOT gated on `isSupabaseConfigured()`. Round 2
+ *   (adversarial review) added credential-source-aware error text and a best-effort non-member
+ *   check (registry-tools.membership-check.ts) for an otherwise-ambiguous list/namespace/publish
+ *   result.
  *
  * Enables enterprise teams to publish and manage skills in a private registry scoped to their
  * organization. Metadata + packaged content live in `private_registry_skills` (JSONB, not S3 —
  * ADR-129); team-scoped RLS + an in-query team_id filter (ADR-116, SMI-6109 addendum).
  *
  * Backing service is selected at module load: the live Supabase-backed service
- * (registry-tools.live.ts) when Supabase is configured, else an in-memory stub
- * (registry-tools.stub.ts) for local dev / tests.
+ * (registry-tools.live.ts) is the DEFAULT — an in-memory stub (registry-tools.stub.ts) is used
+ * only under the explicit `SKILLSMITH_REGISTRY_STUB` test opt-in (see `useRegistryStub()` below).
  *
  * Tier gate: Enterprise (private_registry feature flag — toolFeatureMapping.ts).
  */
 import type { ToolContext } from '../context.js';
-import { type PrivateRegistryInstallSummary, type RegistrySkillContent } from './registry-tools.content.types.js';
+import type { PrivateRegistryInstallSummary, RegistrySkillContent } from './registry-tools.content.types.js';
 import type { RegistryReviewDecision, PrivateRegistryReviewService } from './registry-tools.review.types.js';
 import type { SkillContent } from './registry-tools.schemas.js';
 export { createStubRegistryService } from './registry-tools.stub.js';

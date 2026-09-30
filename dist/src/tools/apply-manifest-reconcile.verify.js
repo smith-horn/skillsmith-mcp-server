@@ -66,7 +66,7 @@ export async function runVerify(input, scopeTarget, context) {
     // hit `entry_changed`, since the manifest never matched the claimed
     // `afterState` in the first place).
     const actuallyWritten = [];
-    await withLockTimeoutMapping(scopeTarget.manifestPath, () => manager.updateSafely((m) => {
+    await withLockTimeoutMapping(() => manager.updateSafely((m) => {
         const updatedSkills = { ...m.installedSkills };
         for (const { key, verifiedAt } of writes) {
             const current = updatedSkills[key];

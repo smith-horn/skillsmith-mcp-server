@@ -30,11 +30,25 @@
  * single row the checkout webhook created for the *purchaser*, then shared with the team, so it
  * names the buyer rather than the caller.
  *
- * Before this module existed, there were zero `audit_logs` writes on any private-registry path,
- * so an Enterprise customer asking "who published this" had no answer at all. Every operation now
- * has an exact one (a real `actorUserId`); historical rows written before their operation moved to
- * the JWT path carry only the bounded answer this module was originally built for: which key,
- * which team, which skill, when.
+ * SMI-6114: COMMITTED MUTATIONS ARE NOT AUDITED HERE ANY MORE.
+ *
+ * This module writes through `getSupabaseAdminClient()`, which needs `SUPABASE_SERVICE_ROLE_KEY`.
+ * The public MCP server never carries that key, so in production every row this module tried to
+ * write was dropped with a stderr line, and prod held zero `private_registry:publish`/`approve`/
+ * `reject`/`deprecate` rows while real publishes and reviews had happened (measured 2026-09-13).
+ * A committed publish, approve, reject, deprecate or undeprecate is now recorded by the database
+ * itself: `trg_prs_audit` (migration 20260913000000_private_registry_audit_trigger.sql) writes one
+ * `audit_logs` row per state change, in the same transaction, for every caller (this server, the
+ * website dashboard, anything else). This module therefore refuses a `success` row for a mutation
+ * operation (see `recordRegistryAudit()`), both so a service-role-configured host cannot write a
+ * duplicate and so the old, never-delivered path cannot quietly come back.
+ *
+ * What still flows through here, best-effort: reads (`list`/`get`/`namespace`/`content_read`) and
+ * mutation ATTEMPTS that did not commit (`denied`/`not_found`/`error`). Neither can be recorded by
+ * a trigger (a read writes nothing; a denied UPDATE matches zero rows and a refused review RPC
+ * rolls back). On a host without a service-role key — which includes every production MCP host —
+ * these rows are NOT written; the only trace is the stderr line below. Do not read their absence
+ * from `audit_logs` as evidence that no attempt happened.
  *
  * ONE ACTOR PER PATH, NEVER THE WRONG ONE (cross-provider review finding #3).
  *
@@ -75,21 +89,35 @@
  * `approve`/`reject` (SMI-5949 Wave 2 Step 4, D-5) are the two terminal decisions
  * `review_private_registry_submission()` can write.
  */
-export type RegistryAuditOperation = 'publish' | 'deprecate' | 'undeprecate' | 'content_read' | 'approve' | 'reject' | 'list' | 'get' | 'namespace';
+export type RegistryMutationOperation = 'publish' | 'deprecate' | 'undeprecate' | 'approve' | 'reject';
+export type RegistryReadOperation = 'content_read' | 'list' | 'get' | 'namespace';
+export type RegistryAuditOperation = RegistryMutationOperation | RegistryReadOperation;
 /**
  * Which credential authorized the call.
  * - `license_key`: the shared team license key (team-scoped, no per-user identity).
  * - `user_jwt`: the signed-in user's own token, so RLS authorized it against a real `auth.uid()`.
  */
 export type RegistryAuditAuthPath = 'license_key' | 'user_jwt';
-export interface RegistryAuditEvent {
-    operation: RegistryAuditOperation;
+/**
+ * SMI-6114: a mutation operation cannot carry `result: 'success'` — the committed change is
+ * audited server-side by `trg_prs_audit`. The type makes a new success call site a compile error;
+ * `recordRegistryAudit()` also refuses one at runtime for untyped callers.
+ */
+export type RegistryAuditEvent = RegistryReadAuditEvent | RegistryMutationAuditEvent;
+export type RegistryReadAuditEvent = RegistryAuditEventFields & {
+    operation: RegistryReadOperation;
+    result: 'success' | 'denied' | 'not_found' | 'error';
+};
+export type RegistryMutationAuditEvent = RegistryAuditEventFields & {
+    operation: RegistryMutationOperation;
+    result: 'denied' | 'not_found' | 'error';
+};
+export interface RegistryAuditEventFields {
     teamId: string;
     /** Omitted for team-wide operations with no single skill in scope (SMI-6109) — `list` (bulk)
      *  and `namespace` (queries the `teams` table, not `private_registry_skills` at all). */
     skillId?: string;
     version?: string;
-    result: 'success' | 'denied' | 'not_found' | 'error';
     authPath: RegistryAuditAuthPath;
     /**
      * The authenticated user's id (the JWT `sub`), on the `user_jwt` path only. Null/absent means
@@ -118,10 +146,10 @@ export interface RegistryAuditEvent {
  * anything that could be replayed. Returns null when no key is readable, so an absent credential
  * is recorded as absent rather than as some default bucket.
  *
- * SMI-6080: "the presented credential" is whatever `readLicenseKey()` resolved — a license key, or
- * `SKILLSMITH_API_KEY` when that fallback applied. Both hash into the same `license_keys.key_hash`
- * row, so a fingerprint stays a stable per-key correlator either way; it just no longer implies the
- * caller configured `SKILLSMITH_LICENSE_KEY` specifically.
+ * SMI-6080: "the presented credential" is whatever the registry credential chain resolved — a
+ * license key, `SKILLSMITH_API_KEY`, or (SMI-6622 round 2) `~/.skillsmith/config.json`'s `apiKey`.
+ * All three hash into the same `license_keys.key_hash` row, so a fingerprint stays a stable
+ * per-key correlator regardless of source; it just no longer implies any one of them specifically.
  */
 export declare function licenseKeyFingerprint(licenseKey?: string): string | null;
 /**
@@ -139,7 +167,9 @@ export declare function licenseKeyFingerprint(licenseKey?: string): string | nul
  */
 export declare function accessTokenSubject(accessToken: string): string | null;
 /**
- * Write one `audit_logs` row for a private-registry mutation.
+ * Best-effort `audit_logs` row for a private-registry read, or for a mutation attempt that did not
+ * commit. Needs a service-role key, so it is a stderr-only no-op on production MCP hosts — see the
+ * module docstring (SMI-6114).
  *
  * Never throws: the caller's operation has already succeeded or failed on its own terms, and an
  * audit-transport problem must not change that outcome.

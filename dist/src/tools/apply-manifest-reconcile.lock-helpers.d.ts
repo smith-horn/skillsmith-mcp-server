@@ -7,5 +7,5 @@
  * `apply-manifest-reconcile.verify.ts` share one implementation rather than
  * two copies drifting apart.
  */
-export declare function withLockTimeoutMapping<T>(manifestPath: string, run: () => Promise<T>): Promise<T>;
+export declare function withLockTimeoutMapping<T>(run: () => Promise<T>): Promise<T>;
 //# sourceMappingURL=apply-manifest-reconcile.lock-helpers.d.ts.map

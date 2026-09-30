@@ -12,7 +12,6 @@
  * Hash display: truncated to 8 chars for human readability (full hash stored).
  */
 import { z } from 'zod';
-import type { ToolContext } from '../context.js';
 /**
  * Input schema for skill_outdated tool
  */
@@ -131,7 +130,5 @@ export declare const outdatedToolSchema: {
         required: never[];
     };
 };
-export declare const executeOutdated: (input: {
-    include_deps: boolean;
-}, context: ToolContext) => Promise<OutdatedResponse>;
+export { executeOutdated } from './outdated.action.js';
 //# sourceMappingURL=outdated.d.ts.map

@@ -1,21 +1,29 @@
 /**
- * @fileoverview SMI-5905 Wave 3 — `getContent()` entitlement + client-getter-split regression suite
+ * @fileoverview SMI-6651 (plan D14) — `getContent()` release-RPC regression suite
  * @see docs/internal/implementation/private-registry-skill-install.md
- * @see supabase/functions/private-registry-get/index.entitlement.test.ts — the CLI-transport twin
+ * @see supabase/functions/private-registry-get/index.test.ts — the Edge Function transport twin
+ * @see supabase/migrations/20260915000000_private_registry_content_release_rpc.sql — the RPC
  *
- * Two invariants, both of which a plausible future refactor could silently break:
+ * Before SMI-6651 this file modeled a three-step client-side flow: a metadata select, a
+ * `check_registry_team_entitlement` RPC, and a `content` select — each a separate round trip over
+ * the caller's own JWT. `authenticated` no longer holds table-level SELECT on
+ * `private_registry_skills` at all (the migration above REVOKEs it and grants back only the
+ * metadata columns), so a client-side `content` read is not merely unnecessary now, it is
+ * impossible. All three steps are one `release_private_registry_skill_content` SECURITY DEFINER
+ * RPC call, and this suite models THAT contract directly rather than the table access it replaced.
+ * Version resolution, deprecated-row exclusion, and the team-scoped entitlement decision tree are
+ * now internal to the RPC's own SQL and are covered by the migration's own test suite
+ * (`scripts/tests/supabase/**`), not here — this file's job is the mapping between the RPC's
+ * `status` and what `getContent()` does with it.
  *
- * 1. **Entitlement is the ROW's team, never the caller's tier** (Sol plan-review finding #1).
- *    `profiles.tier` is `MAX(tier_rank)` across every team a user belongs to, so a user who is
- *    Enterprise via Team A reads `enterprise` globally even while Team B — which actually owns the
- *    row — has downgraded. The `caller is Enterprise via a DIFFERENT team` case below is the
- *    concrete inversion of that bypass, and it also asserts `profiles` is never read at all.
+ * Two invariants a plausible future refactor could silently re-break:
  *
- * 2. **`getAdminUserClient()` and `getMemberUserClient()` are never swapped at a call site.**
- *    Two assertions, because either alone is weak: the no-signed-in-user error messages differ per
- *    getter (so the call site is observable even when nothing else runs), and the audit row's
- *    `auth_role` is read back off the binding the getter produced (so a swap shows up in
- *    production telemetry, not only here).
+ * 1. **`getAdminUserClient()` and `getMemberUserClient()` are never swapped at a call site** —
+ *    kept from the pre-SMI-6651 suite; `setDeprecated()`'s admin-gated table access is unaffected
+ *    by the RPC migration and still needs this coverage.
+ * 2. **`getContent()` never reads `private_registry_skills` directly any more.** One dedicated
+ *    test installs a client whose `.from()` THROWS unconditionally and confirms `getContent()`
+ *    still succeeds — a regression here (reintroducing a client-side select) fails loudly.
  */
 export {};
 //# sourceMappingURL=registry-tools.live.content.test.d.ts.map

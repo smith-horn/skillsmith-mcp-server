@@ -10,73 +10,38 @@
  * everything that decides WHETHER a caller may read a team's packaged content belongs together.
  *
  * Imports from `registry-tools.live.ts` are TYPE-ONLY, deliberately: `live.ts` imports
- * `getSkillContent` from here at runtime, so a value import back would be a real cycle. The two
- * shared constants live in `registry-tools.content.types.ts` for that reason.
+ * `getSkillContent` from here at runtime, so a value import back would be a real cycle.
  *
  * ============================================================================
- * TEAM-SCOPED ENTITLEMENT (Sol plan-review finding #1, critical, confirmed; SMI-6111)
+ * METADATA LOOKUP, ENTITLEMENT, AND CONTENT ARE NOW ONE RELEASE RPC (SMI-6651 / D14)
  * ============================================================================
- * `profiles.tier` is `MAX(tier_rank)` over the user's own subscription AND every team they belong
- * to (`20260524000002_team_member_tier_sync.sql`, `recompute_user_tier`). A user who is Enterprise
- * via Team A and also a member of a since-downgraded Team B still reads `tier = 'enterprise'`
- * globally — so a `profiles.tier` check does not prove the team that owns the requested row is
- * entitled. `profiles` is therefore never read on this path.
+ * Before SMI-6651 this function ran a metadata select, a `check_registry_team_entitlement` RPC,
+ * and a separate `content` select — three client-side calls over the caller's own JWT.
+ * `authenticated` no longer holds table-level SELECT on `private_registry_skills` at all
+ * (`20260915000000_private_registry_content_release_rpc.sql`), so a client-side `content` read is
+ * no longer merely unnecessary, it is impossible.
  *
- * Neither is the outer `private_registry_manage` handler's license-derived `teamId` treated as
- * proof of entitlement on its own. That id, plus RLS, establishes *membership*: `resolve_team_from
- * _license` resolves a team from a shared key, and `private_registry_skills_member_read` filters
- * rows to teams the caller belongs to. Membership is not a live subscription tier — a team that
- * downgrades from Enterprise without removing its members would keep indefinite content access if
- * membership were the only gate (the exact scenario ADR-129's Enterprise gate exists to prevent).
- *
- * So: the metadata read is RLS-scoped AND explicitly `team_id`-filtered (the ADR-116 invariant
- * every method on this service honors), and the entitlement check is then resolved against
- * `row.team_id` — the value read back off the row — via the `check_registry_team_entitlement`
- * SECURITY DEFINER RPC. Reading it back off the row rather than reusing the parameter keeps this
- * function's logic identical to the Edge Function's, where RLS is the only tenant scope; the two
- * transports cannot drift into disagreeing about which team is being checked.
- *
- * SMI-6111: this used to require the SERVICE-ROLE client, because `subscriptions`' only read
- * policy is "Users can view own subscriptions" (`011_users_subscriptions.sql`, `user_id =
- * auth.uid()`), so a team member who is not the subscription's purchaser sees zero rows through
- * their own JWT and every non-owner would be spuriously denied. That's now handled server-side by
- * `check_registry_team_entitlement(p_team_id)` (`20260824000000_check_registry_team_entitlement
- * .sql`), a narrowly-scoped `SECURITY DEFINER` function callable by `authenticated` — it answers
- * only "is team X's own subscription Enterprise-entitled," with no personal-subscription
- * fallback. It is deliberately NOT built on `resolve_effective_entitlement(p_user_id, p_team_id)`
- * (`20260819000001_resolve_effective_entitlement.sql`): that function's personal-subscription
- * UNION leg has no team correlation and ranks ahead of team-correlated candidates by tier, so a
- * caller with their own personal Enterprise subscription who is merely a member of some other,
- * non-Enterprise team would resolve to entitled=true for that team via their personal leg —
- * reintroducing the exact cross-team leak `profiles.tier` was excluded above to prevent. See
- * `docs/internal/implementation/smi-6111-registry-content-install-entitlement-rpc.md` for the
- * full design rationale. The member-authenticated client is used for the RPC call, same as the
- * metadata and content reads — no service-role client exists anywhere in this file anymore.
- *
- * ORDER IS LOAD-BEARING: metadata (no `content` column) → entitlement → content. A denied read
- * therefore never transfers a byte of content, and a not-found never reads one.
+ * All three steps are now one `release_private_registry_skill_content` SECURITY DEFINER RPC call,
+ * over the same member-authenticated client `getMemberUserClient()` already produced. It resolves
+ * entitlement against the ROW'S OWN team — never the caller's globally denormalized
+ * `profiles.tier`, which would let a caller entitled via a different team bypass a downgraded
+ * team's gate (see
+ * docs/internal/implementation/smi-6111-registry-content-install-entitlement-rpc.md) — and writes
+ * its own `audit_logs` row for every outcome it RETURNS (`not_found`/`denied`/`released`) -- not for
+ * every call: a NULL `auth.uid()` or any input-validation failure raises before the first audit
+ * insert, so those calls audit nothing. `recordRegistryAudit`
+ * below is reached only for outcomes the RPC itself cannot audit: the RPC call failing or
+ * returning no data, an unrecognized `status`, and a `released` response with malformed content.
+ * See `supabase/migrations/20260915000000_private_registry_content_release_rpc.sql` for the RPC's
+ * full contract -- with one caveat. That file's own `COMMENT ON` text is SUPERSEDED: it still says
+ * the RPC "audits every call" and "writes exactly one audit_logs row per call", both of which
+ * overclaim for the reasons above. `20260915000001_private_registry_release_rpc_comment_fix.sql`
+ * corrected them, and the LIVE catalog carries the corrected text on staging and production.
+ * Migrations are immutable, so the older file keeps its original wording as a historical record --
+ * read it for the RPC's LOGIC, not for its comments.
  */
-import { type RegistrySkillContent } from './registry-tools.content.types.js';
-import type { MinimalSupabaseClient } from './registry-tools.live.js';
+import type { RegistrySkillContent } from './registry-tools.content.types.js';
 import type { UserClientBinding } from './registry-tools.live.auth.js';
-/** Shape of `check_registry_team_entitlement`'s JSONB return value. */
-interface RegistryTeamEntitlement {
-    entitled: boolean;
-    detail: string;
-}
-/**
- * Is THIS team currently entitled to Enterprise? See the header — resolved server-side, from the
- * team that owns the row, never from the caller's denormalized `profiles.tier`.
- *
- * A lookup failure throws rather than returning `{entitled: false}`: an unreachable
- * `check_registry_team_entitlement` call is an outage, and reporting it as "not entitled" would
- * tell a paying customer their subscription had lapsed. Fail loud, not fail-wrong.
- *
- * @param teamId - the row's own `team_id`, already RLS-authorized for this caller.
- * @param client - the caller's own member-authenticated client (from `UserClientBinding`); no
- *   service-role client exists in this file (SMI-6111).
- */
-export declare function isTeamEnterpriseEntitled(teamId: string, client: MinimalSupabaseClient): Promise<RegistryTeamEntitlement>;
 export interface GetSkillContentParams {
     /** MUST come from `getMemberUserClient()` — see `registry-tools.live.ts`. */
     binding: UserClientBinding;
@@ -92,14 +57,14 @@ export interface GetSkillContentParams {
  * Returns `null` when nothing visible matches (a genuine absence, or a cross-team `skillId` that
  * RLS + the tenant filter removed — the two are deliberately indistinguishable to the caller, so
  * this is never an existence oracle for another team's registry). Throws when the caller's own
- * team is no longer entitled, or on a real query failure: an outage must never be reported as
+ * team is no longer entitled, or on a real RPC failure: an outage must never be reported as
  * "not found".
  *
- * Version selection mirrors `registry-tools.live.ts`'s `get(teamId, skillId, version)` exactly —
- * an explicit `version` pins it, otherwise the MOST RECENTLY PUBLISHED version wins (not the
- * highest semver), chosen with the same `published_at` reduce — so `get` and `install` can never
- * disagree about what "no version specified" means.
+ * Version selection (an explicit `version` pins it, otherwise the MOST RECENTLY PUBLISHED version
+ * wins, not the highest semver) is now entirely the RPC's own concern — see
+ * `release_private_registry_skill_content`'s SQL for the exact `ORDER BY published_at DESC, id`
+ * tie-break, matched to `registry-tools.live.ts`'s `get(teamId, skillId, version)` reduce so `get`
+ * and `install` can never disagree about what "no version specified" means.
  */
 export declare function getSkillContent(params: GetSkillContentParams): Promise<RegistrySkillContent | null>;
-export {};
 //# sourceMappingURL=registry-tools.live.content.d.ts.map

@@ -301,7 +301,7 @@ async function installSkillImpl(input, _context) {
                         ...(targetCheck.tips !== undefined && { tips: targetCheck.tips }),
                     }, gate.problems);
                 }
-                const conflictCheck = await checkForConflicts(skillName, installPath, manifest, validInput.conflictAction, validInput.skillId);
+                const conflictCheck = await checkForConflicts(skillName, installPath, manifest, validInput.conflictAction, validInput.skillId, effectiveClient);
                 if (!conflictCheck.shouldProceed) {
                     return attachGateProblems(conflictCheck.earlyReturn, gate.problems);
                 }

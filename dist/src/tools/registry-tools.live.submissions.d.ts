@@ -100,8 +100,9 @@ export interface PrivateRegistryReviewRow {
  * `published_by` (`23514`), self-approval. On failure the RPC's `error.message` is thrown
  * VERBATIM (plan-review finding M10) — no SQLSTATE-to-canned-message remapping, which would
  * silently drop the D-9 "promote a second admin/owner" remediation text or the D-7 client-version
- * remediation text. Every documented D-5 failure is a business-rule denial, so both this
- * function's failure branches audit `result: 'denied'`.
+ * remediation text. An RPC error is audited `result: 'denied'` (every documented D-5 failure is a
+ * business-rule denial); an empty response is audited `result: 'error'`. A successful decision is
+ * audited server-side by `trg_prs_audit` (SMI-6114), not here.
  */
 export declare function reviewSubmission(params: {
     client: MinimalSupabaseClient;

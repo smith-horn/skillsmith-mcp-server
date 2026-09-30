@@ -7,7 +7,7 @@ import { parseRepoUrl, type ParsedRepoUrl } from '@skillsmith/core';
 import { type ClientId } from '@skillsmith/core/install';
 import { type ParsedSkillId, type RegistrySkillInfo } from './install.types.js';
 export { parseRepoUrl, type ParsedRepoUrl };
-export { acquireManifestLock, releaseManifestLock, loadManifest, saveManifest, updateManifestSafely, } from './install.helpers.manifest.js';
+export { loadManifest, saveManifest, updateManifestSafely } from './install.helpers.manifest.js';
 /**
  * Parse skill ID or URL to get components
  * SMI-1491: Added isRegistryId flag to detect registry skill IDs vs direct GitHub URLs

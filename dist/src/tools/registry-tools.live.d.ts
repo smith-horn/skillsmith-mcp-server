@@ -60,11 +60,12 @@
  *   SMI-6080), and surface an actionable error when no user credential is present.
  *
  * - **Content reads** (`getContent`, SMI-5905 Wave 3) are member-level like the operations above:
- *   the signed-in user's own JWT (so `_member_read` decides visibility against a real
- *   `auth.uid()`). `getAdminUserClient()` / `getMemberUserClient()` (`registry-tools.live.auth.ts`)
+ *   the signed-in user's own JWT, so the release RPC resolves visibility against a real
+ *   `auth.uid()`. `getAdminUserClient()` / `getMemberUserClient()` (`registry-tools.live.auth.ts`)
  *   are two explicitly-named getters for exactly this reason — the choice cannot be defaulted or
- *   omitted at a call site. What decides whether a content read is *entitled* is in
- *   `registry-tools.live.content.ts`, and is scoped to the row's own team, not the caller's tier.
+ *   omitted at a call site. Visibility, entitlement (scoped to the row's own team, not the
+ *   caller's tier) and the audit row all live in the `release_private_registry_skill_content`
+ *   RPC that `registry-tools.live.content.ts` calls (SMI-6651).
  *
  * - **`publish`** (SMI-5949 Wave 2 Step 2, D-7) is member-level like `getContent` — not admin: any
  *   team member may submit a version, not only admins. `published_by` is `DEFAULT auth.uid()`
@@ -89,6 +90,11 @@
  * `registry-tools.live.audit.ts`'s own audit-log write path (a system-table insert, fail-soft,
  * structurally different from a tenant-data read); `SKILLSMITH_API_KEY_HMAC_SECRET`'s
  * distribution (an unrelated secret, not consumed by any Supabase call).
+ *
+ * AUDIT (SMI-6114): a committed publish/deprecate/undeprecate/approve/reject is audited by the
+ * database trigger `trg_prs_audit`, never by a client-side success row from this file. The
+ * `recordRegistryAudit()` calls that remain record reads and attempts that did not commit, and
+ * only reach `audit_logs` on a host holding a service-role key — see that module's docstring.
  */
 import type { PrivateRegistryService } from './registry-tools.js';
 export interface PrivateRegistrySkillRow {

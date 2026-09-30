@@ -58,6 +58,31 @@ export declare function getAdminUserClient(operation: string): Promise<UserClien
  * `getContent`) hand a team's packaged content to anyone holding the key regardless of whether
  * they are still a member, and (for `publish`) leave `published_by` NULL — unrecoverable for D-6's
  * self-approval check, which needs a real submitter to compare against.
+ *
+ * Unchanged by SMI-6622 round 6 (its message stays in scope for SMI-6649, not this fix) — see
+ * {@link tryBindMemberUserClient} below for the probe-safe variant that fix added.
  */
 export declare function getMemberUserClient(operation: string): Promise<UserClientBinding>;
+/** Why {@link tryBindMemberUserClient} could not produce a binding — a closed enum, never text. */
+export type ProbeBindFailureReason = 'not_signed_in' | 'token_unavailable' | 'client_unavailable';
+export type ProbeBindResult = {
+    ok: true;
+    binding: UserClientBinding;
+} | {
+    ok: false;
+    reason: ProbeBindFailureReason;
+};
+/**
+ * Probe-safe member-client binder (SMI-6622 round 6 PR-07) — the ONLY caller is
+ * `registry-tools.membership-check.ts`'s `probeTeamMembership()`, which must never see upstream
+ * error text (a keychain/token-store failure, a Supabase client-construction error) in any form,
+ * message included. Resolves `resolveUserAccessToken()` EXACTLY ONCE, inside a `try`, so the probe
+ * no longer makes a second, duplicate resolution call the way it did when it checked the token
+ * itself before also calling {@link getMemberUserClient} (round 5) — that duplicated keychain/
+ * refresh work and left a window where the credential could change between the two reads.
+ *
+ * Never throws; every failure returns a `reason`, never a message. `getMemberUserClient()` above
+ * is UNCHANGED — its message text is SMI-6649 scope, not this fix.
+ */
+export declare function tryBindMemberUserClient(): Promise<ProbeBindResult>;
 //# sourceMappingURL=registry-tools.live.auth.d.ts.map

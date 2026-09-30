@@ -7,7 +7,7 @@
  */
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { safeWriteFile } from '@skillsmith/core';
+import { safeWriteFile, manifestKeyFor } from '@skillsmith/core';
 import { detectModifications, createSkillBackup, cleanupOldBackups, loadOriginal, storeOriginal, hashContent, } from './install.helpers.js';
 import { threeWayMerge } from './merge.js';
 import { updateManifestSafely } from './install.helpers.js';
@@ -19,10 +19,16 @@ import { updateManifestSafely } from './install.helpers.js';
  * @param manifest - Current skill manifest
  * @param conflictAction - User's chosen action (or undefined)
  * @param skillId - Skill ID for result
+ * @param client - SMI-6358: which client's entry to key on
+ *   (manifestKeyFor(skillName, client)) — a bare-name lookup silently reads
+ *   the canonical client's entry (or nothing) for a non-canonical install,
+ *   the same class of bug fixed for pin/unpin/backfill. install.ts's caller
+ *   already resolves this identically for its own pre-flight lookup.
  * @returns ConflictCheckResult indicating how to proceed
  */
-export async function checkForConflicts(skillName, installPath, manifest, conflictAction, skillId) {
-    const existingEntry = manifest.installedSkills[skillName];
+export async function checkForConflicts(skillName, installPath, manifest, conflictAction, skillId, client) {
+    const manifestKey = manifestKeyFor(skillName, client);
+    const existingEntry = manifest.installedSkills[manifestKey];
     if (!existingEntry?.originalContentHash) {
         return { shouldProceed: true };
     }
@@ -89,10 +95,16 @@ export async function checkForConflicts(skillName, installPath, manifest, confli
  * @param owner - Repository owner
  * @param repo - Repository name
  * @param skillId - Skill ID for result
+ * @param client - SMI-6358: see checkForConflicts()'s doc comment above.
+ *   NOTE: this function is not currently called from anywhere in
+ *   production (verified via repo-wide grep) — the `client` param is added
+ *   for correctness/consistency with checkForConflicts() so a future caller
+ *   does not inherit the same bare-key bug.
  * @returns MergeOperationResult indicating how to proceed
  */
-export async function handleMergeAction(skillName, installPath, upstreamContent, manifest, owner, repo, skillId) {
-    const existingEntry = manifest.installedSkills[skillName];
+export async function handleMergeAction(skillName, installPath, upstreamContent, manifest, owner, repo, skillId, client) {
+    const manifestKey = manifestKeyFor(skillName, client);
+    const existingEntry = manifest.installedSkills[manifestKey];
     // Load original and current content
     const originalContent = await loadOriginal(skillName);
     let currentContent;
@@ -135,8 +147,8 @@ export async function handleMergeAction(skillName, installPath, upstreamContent,
         ...currentManifest,
         installedSkills: {
             ...currentManifest.installedSkills,
-            [skillName]: {
-                ...currentManifest.installedSkills[skillName],
+            [manifestKey]: {
+                ...currentManifest.installedSkills[manifestKey],
                 lastUpdated: new Date().toISOString(),
                 originalContentHash: upstreamHash,
             },

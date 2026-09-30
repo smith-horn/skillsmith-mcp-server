@@ -4,11 +4,29 @@
  * the 500-line pre-commit file-length gate.
  * @see SMI-5949: Approval Gate -- Submitter/Approver Role Split for `private_registry_publish`
  *
- * These exercise the handlers against the in-memory stub (no Supabase configured). Live
- * Supabase-backed behaviour is in registry-tools.live.review-decision.test.ts.
+ * These exercise the handlers against the in-memory stub, injected directly via
+ * `setPrivateRegistryService()`. Live Supabase-backed behaviour is in
+ * registry-tools.live.review-decision.test.ts.
+ *
+ * SMI-6622: `resolveTeamId()` now always attempts real team resolution regardless of which
+ * service is injected, so this file mocks `registry-tools.team.js` directly — same as every other
+ * registry-tools*.test.ts file that drives the dispatcher without a real credential.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { executePrivateRegistryPublish, executePrivateRegistryManage, createStubRegistryService, setPrivateRegistryService, } from './registry-tools.js';
+// importOriginal + spread (SMI-6622 round 2) — see registry-tools.install-action.test.ts's
+// identical comment for why (a future new export never needs re-adding to every mock).
+vi.mock('./registry-tools.team.js', async (importOriginal) => {
+    const actual = await importOriginal();
+    return {
+        ...actual,
+        resolveRegistryTeamId: vi.fn(async () => ({
+            teamId: 'team-alpha',
+            source: 'env:SKILLSMITH_LICENSE_KEY',
+        })),
+        readRegistryCredential: vi.fn(() => 'sk_test_fake_license'),
+    };
+});
 const mockContext = {};
 const SAMPLE_CONTENT = { 'SKILL.md': '# My Skill\n\nDoes a useful thing.' };
 /** A simulated admin identity distinct from the stub's `DEFAULT_ACTOR` publisher (SMI-5949 Wave 2

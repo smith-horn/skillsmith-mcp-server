@@ -5,6 +5,7 @@
  *
  * Extracted from install.ts per governance code review (file size > 500 lines)
  */
+import type { ClientId } from '@skillsmith/core/install';
 import type { SkillManifest } from './install.types.js';
 import type { ConflictAction, InstallResult } from './install.types.js';
 /**
@@ -26,9 +27,14 @@ export interface ConflictCheckResult {
  * @param manifest - Current skill manifest
  * @param conflictAction - User's chosen action (or undefined)
  * @param skillId - Skill ID for result
+ * @param client - SMI-6358: which client's entry to key on
+ *   (manifestKeyFor(skillName, client)) — a bare-name lookup silently reads
+ *   the canonical client's entry (or nothing) for a non-canonical install,
+ *   the same class of bug fixed for pin/unpin/backfill. install.ts's caller
+ *   already resolves this identically for its own pre-flight lookup.
  * @returns ConflictCheckResult indicating how to proceed
  */
-export declare function checkForConflicts(skillName: string, installPath: string, manifest: SkillManifest, conflictAction: ConflictAction | undefined, skillId: string): Promise<ConflictCheckResult>;
+export declare function checkForConflicts(skillName: string, installPath: string, manifest: SkillManifest, conflictAction: ConflictAction | undefined, skillId: string, client: ClientId): Promise<ConflictCheckResult>;
 /**
  * Result of merge operation
  */
@@ -52,7 +58,12 @@ export interface MergeOperationResult {
  * @param owner - Repository owner
  * @param repo - Repository name
  * @param skillId - Skill ID for result
+ * @param client - SMI-6358: see checkForConflicts()'s doc comment above.
+ *   NOTE: this function is not currently called from anywhere in
+ *   production (verified via repo-wide grep) — the `client` param is added
+ *   for correctness/consistency with checkForConflicts() so a future caller
+ *   does not inherit the same bare-key bug.
  * @returns MergeOperationResult indicating how to proceed
  */
-export declare function handleMergeAction(skillName: string, installPath: string, upstreamContent: string, manifest: SkillManifest, owner: string, repo: string, skillId: string): Promise<MergeOperationResult>;
+export declare function handleMergeAction(skillName: string, installPath: string, upstreamContent: string, manifest: SkillManifest, owner: string, repo: string, skillId: string, client: ClientId): Promise<MergeOperationResult>;
 //# sourceMappingURL=install.conflict.d.ts.map

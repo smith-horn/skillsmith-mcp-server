@@ -8,7 +8,7 @@
  * file covers the four documented D-5 failure paths — non-admin (`42501`), self-approval,
  * already-decided/terminal-state, and missing `published_by` (`23514`, the old-client case) — and
  * proves each RPC error message reaches the MCP caller VERBATIM (plan-review finding M10), plus
- * the audit rows both `approve`/`reject` write on success and on denial.
+ * the audit rows `approve`/`reject` write on denial (and, since SMI-6114, do not write on success).
  *
  * Every scenario here is scripted purely at the fake-client/RPC-response level: this file does NOT
  * re-verify the RPC's own SQL logic (that is Wave 1's migration smoke suite + staging harness,

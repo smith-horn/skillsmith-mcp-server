@@ -8,15 +8,6 @@
  */
 import { type SkillManifest } from './install.types.js';
 /**
- * Acquire a file lock for manifest operations
- * SMI-1533: Prevents race conditions during concurrent installs
- */
-export declare function acquireManifestLock(): Promise<void>;
-/**
- * Release the manifest lock
- */
-export declare function releaseManifestLock(): Promise<void>;
-/**
  * Load or create manifest.
  *
  * ADR-139 (SMI-6274 Wave 4) / GPT-5.6-Sol PR review: `manifestPath` is now an
@@ -39,6 +30,18 @@ export declare function saveManifest(manifest: SkillManifest): Promise<void>;
 /**
  * SMI-1533: Safely update manifest with locking
  * Prevents race conditions during concurrent install operations
+ *
+ * SMI-6735: locking now delegates to `withFileLock` (`@skillsmith/core`'s
+ * owned-lock primitive) instead of a hand-rolled age-based EEXIST/mtime
+ * protocol — this module and `@skillsmith/core`'s own `ManifestManager` used
+ * to run two independent age-based lock implementations against the
+ * BYTE-IDENTICAL `MANIFEST_PATH + '.lock'` file in the same MCP server
+ * process, which is not mutual exclusion.
+ *
+ * The guard fires FIRST, before `withFileLock` ever attempts to create a
+ * lock file (SMI-6343 follow-up: MANIFEST_PATH is homedir-derived with no
+ * override parameter, so only this guard — and the $HOME test sandbox —
+ * protects it).
  */
 export declare function updateManifestSafely(updateFn: (manifest: SkillManifest) => SkillManifest): Promise<void>;
 //# sourceMappingURL=install.helpers.manifest.d.ts.map

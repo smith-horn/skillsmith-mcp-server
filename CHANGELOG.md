@@ -4,6 +4,133 @@ All notable changes to `@skillsmith/mcp-server` are documented here.
 
 ## [Unreleased]
 
+## v0.7.18
+
+- **Fix (critical)**: **v0.7.17 cannot be imported at all — use this version instead.** `0.7.17`
+  declared `@skillsmith/core: ^0.12.5` and imports `withFileLock` from it, but the published
+  `@skillsmith/core@0.12.5` does not export that symbol: it was added to core's source without a
+  version bump, so the published `0.12.5` and this repo's `0.12.5` had the same version number and
+  different contents. `import('@skillsmith/mcp-server')` therefore threw
+  `SyntaxError: The requested module '@skillsmith/core' does not provide an export named
+  'withFileLock'` — at module load, so every consumer path was affected, not just the manifest one.
+  This release publishes `@skillsmith/core@0.12.6` with that export and raises the dependency to
+  `^0.12.6`. `0.7.17` is deprecated on npm.
+- Everything in v0.7.17's notes below still applies; it shipped correctly and only the resolved
+  `core` version was wrong.
+
+## v0.7.17
+
+- **Refactor**: SMI-6532 step 6 -- `outdated.ts` split at the action seam (`outdated.action.ts`,
+  `outdated.helpers.ts` unchanged in behaviour) so a renderer table could land beside it without
+  pushing either file over the 500-line gate. New `update-target-render.ts` exports
+  `UPDATE_TARGET_TEXT`, a total `Record<UpdateTargetReason | UpdateResultCode, string>` mirroring
+  `@skillsmith/core`'s closed update-classification sets (§4.4 of
+  `update-safety-and-source-resolution.md`) -- exported but not yet wired into `outdated.ts` or
+  `skill-updates.ts`, since neither tool classifies a target against those sets today; the call
+  site arrives with step 5/A1's update-target pipeline. `@skillsmith/core`'s root barrel now also
+  exports the two closed-set types (`UpdateTargetReason`, `UpdateResultCode`) this file's `Record`
+  signature needs -- previously internal to that package, with no path for another workspace
+  package to reach them. The three-surface (well, two-surface until CLI's step 5 lands)
+  reason/result renderer parity test lives in `@skillsmith/core`
+  (`update-target-render-parity.test.ts`), not here -- it AST-reads this file and the VS Code
+  extension's `manifestReader.ts` rather than importing either, so it needs no new devDependency
+  and no wider export than the two types above.
+
+- **Test**: SMI-6358 post-merge retro -- `install.conflict.ts`'s client keying is now pinned at
+  BOTH of its `manifestKeyFor` call sites, `checkForConflicts` and `handleMergeAction`, by
+  `install.conflict.test.ts`. `install.test.ts` mocks the whole module, so it asserts what is
+  passed and never executes the function; the e2e file passes `CANONICAL_CLIENT` everywhere, for
+  which `manifestKeyFor` is the identity function. Reverting both keying calls to a bare name
+  previously left all 24 unit and all 11 e2e tests green. The suite exercises every non-canonical
+  `ClientId` at both sites rather than a sampled one or two -- the union is closed, so the table is
+  derived from `CLIENT_IDS` and pinned before use, because a parameterized suite given an empty
+  table generates no cases and reports a pass. (#2920 follow-up)
+
+- **Fix (data integrity)**: SMI-6358 -- `checkForConflicts()` takes `client` and resolves the
+  manifest key through `manifestKeyFor(name, client)` rather than assuming the canonical client.
+  Installing for one client could previously report a conflict belonging to another, or miss a real
+  one. Every caller passes the argument; no export was removed. (#2920)
+
+- **Fix**: SMI-6768 -- the `held` remedy this file renders verbatim from `@skillsmith/core` no
+  longer asserts the holder is alive; see `@skillsmith/core`'s entry for why that claim was false
+  in three reachable states. Nothing changes in this package's own behaviour. The `lockReason`
+  docstring and the `lock_timeout` comment are corrected: **four** of the five reasons depend on a
+  fact this value does not carry, not three -- `held` was added to that list in round 5, after four
+  rounds had read it as determined. (#2896)
+
+- **Fix**: SMI-6764 -- `apply_manifest_reconcile`'s lock-timeout message now renders `@skillsmith/core`'s
+  per-reason remedy verbatim instead of maintaining its own, and drops the per-reason verb along
+  with the primitive (see `@skillsmith/core`'s entry). This file is the one that drifted last time:
+  SMI-6759 changed the verb here and left `StuckLockError` saying something else about the same
+  lock file, in the same process. Three corrections to the text SMI-6759 added, each measured.
+  (1) It claimed the lock "will not clear on its own". A peer process without
+  `SKILLSMITH_LOCK_NO_AUTO_RECLAIM` set can reclaim and release it, measured clearing in under two
+  seconds -- and pairing that false certainty with an unqualified "remove the file" invited
+  deleting a lock a live peer had just taken, the exact break SMI-6735 removed. (2) It advised
+  "unset `SKILLSMITH_LOCK_NO_AUTO_RECLAIM` and retry", which cannot work here: this tool is
+  MCP-only and the server is a long-lived stdio process, so a shell `unset` never reaches it. The
+  message now names the server restart -- the one thing core cannot know, and so the only
+  reason-specific text this file still owns. (#2894)
+
+- **Fix**: SMI-6759 -- a dead lock holder is no longer reported as a timeout. When
+  `SKILLSMITH_LOCK_NO_AUTO_RECLAIM` is set and a process was killed holding the manifest lock,
+  `apply_manifest_reconcile` waited 30s and said "Timed out waiting", which reads as transient
+  contention. That reason (`reclaim_disabled`) is returned only when auto-reclaim is off AND the
+  holder is already dead, so retrying in that process can never help. It now says the lock could
+  not be acquired, states that the holder is dead and auto-reclaim is disabled, and names the
+  remedy that touches no files. (#2893)
+
+- **Fix**: SMI-6735 -- this package's own manifest lock is gone, not fixed in place.
+  `acquireManifestLock()`/`releaseManifestLock()` hand-rolled a second, independent age-based lock
+  against the **byte-identical** path `@skillsmith/core`'s `ManifestManager` locks, and this server runs
+  both in one process -- two protocols on one lock file is not mutual exclusion, so fixing either alone
+  would not have closed it. Both now delegate to core's shared `withFileLock` (`owned-lock`).
+  `updateManifestSafely()` is the only locked entry point; the two lock functions are **removed** and no
+  longer re-exported from `install.helpers.ts`. Neither had a production caller outside this module.
+  `apply_manifest_reconcile`'s lock-timeout mapping also changed: it detected the timeout by matching a
+  literal error message that no longer occurs, and now matches the typed `StuckLockError`. Its guard
+  error additionally names the reclaim-lock path when that is what is held, and distinguishes a genuine
+  timeout from a permanently unacquirable lock -- `errorCode` is unchanged. (#2891)
+- **Docs (no behaviour change)**: SMI-6732 -- `apply_manifest_reconcile`'s `drop_entry`
+  deliberately treats *any* error while checking a record's path as "no longer resolves",
+  which is the opposite of the convention the uninstall guard uses (only a missing path
+  counts as absent). That divergence is intentional and load-bearing: `drop_entry` is the
+  only supported way to clear a manifest record that is blocking an uninstall, so making it
+  stricter would leave affected users with no way out. Both sites now carry a comment naming
+  the other, and a test pins the behaviour, so a future pass that "harmonizes" the two
+  cannot quietly remove the escape hatch.
+
+- **Fix**: SMI-6651 -- private-registry skill installs now read a skill's packaged content
+  through an audited, server-side `release_private_registry_skill_content` RPC instead of a
+  direct table read over the caller's own token. This version needs that RPC to already exist
+  on the server (the accompanying SMI-6651 migration). Once that migration is applied,
+  `authenticated` no longer has table-level SELECT on `private_registry_skills` at all, so an
+  earlier `@skillsmith/mcp-server` version can no longer install private-registry skills --
+  it reads `content` directly, and that read will simply fail. (#2861)
+- **Fix**: SMI-6622 -- `private_registry_publish` and `private_registry_manage` now reach
+  the real private registry with no Supabase environment variables. Before, a server
+  without `SUPABASE_URL` and `SUPABASE_ANON_KEY` quietly used an in-memory test registry:
+  publishes reported success and saved nothing (#2845).
+- **Fix**: SMI-6622 -- registry team lookup also reads the API key `skillsmith login` saves
+  in `~/.skillsmith/config.json`, not only `SKILLSMITH_LICENSE_KEY`/`SKILLSMITH_API_KEY`
+  (#2845).
+- **Fix**: SMI-6622 -- an empty `list` or unresolved `namespace` no longer looks like an
+  empty registry when the problem is membership. If your account isn't on the resolved
+  team, `list`, `namespace` and `publish` say so and name the credential that resolved it.
+  If the membership check itself fails (signed out, network or auth error), `list` and
+  `namespace` return that error instead of an empty success (#2845).
+- **Fix**: SMI-6622 -- a configured Supabase URL that embeds a username or password is now
+  rejected with a clear error up front, instead of letting the credentials show up later in
+  an error message (#2845).
+- **Fix**: SMI-6114 -- private-registry publish, approve, reject, deprecate and undeprecate are
+  now audited by the database itself once the `20260913000000` migration is applied, on every
+  path including hosts without a service-role key, where they previously went unrecorded. The
+  MCP server no longer writes its own success audit rows for those mutations. Rows land in
+  Supabase `audit_logs` with `metadata.transport = 'database_trigger'` and in the website team
+  activity feed; `audit_query`, `audit_export` and `siem_export` read the local audit log and do
+  not include them. Rows about pending or rejected versions stay hidden from every team member,
+  including the reviewing admin and the submitter (#2850).
+
 ## v0.7.16
 
 - **Fix**: SMI-6585 -- the install pre-flight reports its failure instead of swallowing it (#2821)

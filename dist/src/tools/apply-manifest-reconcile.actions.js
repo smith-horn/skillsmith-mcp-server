@@ -39,7 +39,7 @@ export async function runMarkLocal(input, scopeTarget, _context) {
     let resolvedKey = '';
     let beforeState;
     let afterState;
-    await withLockTimeoutMapping(scopeTarget.manifestPath, () => manager.updateSafely((manifest) => {
+    await withLockTimeoutMapping(() => manager.updateSafely((manifest) => {
         const { key, entry } = resolveReconcileEntry(manifest, name, scopeTarget.client);
         resolvedKey = key;
         beforeState = { ...entry };
@@ -101,7 +101,7 @@ export async function runRelink(input, scopeTarget, context) {
     let resolvedKey = '';
     let beforeState;
     let afterState;
-    await withLockTimeoutMapping(scopeTarget.manifestPath, () => manager.updateSafely((manifest) => {
+    await withLockTimeoutMapping(() => manager.updateSafely((manifest) => {
         const { key, entry } = resolveReconcileEntry(manifest, name, scopeTarget.client);
         resolvedKey = key;
         beforeState = { ...entry };
@@ -154,7 +154,7 @@ export async function runDropEntry(input, scopeTarget, _context) {
     const backupPath = await takeManifestBackup(scopeTarget.manifestPath);
     let resolvedKey = '';
     let beforeState;
-    await withLockTimeoutMapping(scopeTarget.manifestPath, () => manager.updateSafely((manifest) => {
+    await withLockTimeoutMapping(() => manager.updateSafely((manifest) => {
         const { key, entry } = resolveReconcileEntry(manifest, name, scopeTarget.client);
         resolvedKey = key;
         beforeState = { ...entry };
@@ -232,7 +232,7 @@ export async function runRevert(input, scopeTarget, _context) {
     // different row than the action it reverses.
     const key = reconcileKeyForLedgerEntry(target.name, target.client);
     const manager = new ManifestManager(target.manifestPath);
-    await withLockTimeoutMapping(target.manifestPath, () => manager.updateSafely((manifest) => {
+    await withLockTimeoutMapping(() => manager.updateSafely((manifest) => {
         const current = manifest.installedSkills[key];
         // Same-entry conflict detection replaces the whole-file hash guard
         // (C7): only THIS entry's current value vs. its recorded after-state
