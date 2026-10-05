@@ -13,7 +13,7 @@ export { parseRepoUrl };
 // Split to install.helpers.manifest.ts per governance code review
 // ============================================================================
 // Re-export manifest helpers from dedicated module
-export { loadManifest, saveManifest, updateManifestSafely } from './install.helpers.manifest.js';
+export { loadManifest, loadManifestWithWarning, saveManifest, updateManifestSafely, } from './install.helpers.manifest.js';
 // ============================================================================
 // Parsing Functions
 // ============================================================================

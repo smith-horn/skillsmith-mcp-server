@@ -10,7 +10,7 @@
  * ledger entry after (C7), so both the forensic backup and the durable
  * revert exist before the caller sees a success response.
  */
-import { ManifestManager } from '@skillsmith/core';
+import { installedSkillsOf, ManifestManager, } from '@skillsmith/core';
 import { resolveClientId } from '@skillsmith/core/install';
 import { appendReconcileLedgerEntry, findReconcileLedgerEntriesFor, readReconcileLedgerResult, removeReconcileLedgerEntry, } from './manifest-reconcile-ledger.js';
 import { ReconcileGuardError, assertDropTargetNoLongerResolves, reconcileKeyForLedgerEntry, resolveReconcileEntry, takeManifestBackup, validateRelinkIdentity, } from './apply-manifest-reconcile.helpers.js';
@@ -233,7 +233,8 @@ export async function runRevert(input, scopeTarget, _context) {
     const key = reconcileKeyForLedgerEntry(target.name, target.client);
     const manager = new ManifestManager(target.manifestPath);
     await withLockTimeoutMapping(() => manager.updateSafely((manifest) => {
-        const current = manifest.installedSkills[key];
+        // SMI-6733 MAJOR 3: a nullish `installedSkills` classifies `ok`.
+        const current = installedSkillsOf(manifest)[key];
         // Same-entry conflict detection replaces the whole-file hash guard
         // (C7): only THIS entry's current value vs. its recorded after-state
         // matters. An unrelated install of a DIFFERENT skill is invisible to

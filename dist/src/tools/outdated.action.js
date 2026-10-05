@@ -8,10 +8,10 @@
  *   zod schema, `OutdatedInput`, and the response interfaces stay in
  *   outdated.ts.
  */
-import { SkillVersionRepository, compareSkillContentHashes } from '@skillsmith/core';
+import { SkillVersionRepository, compareSkillContentHashes, installedSkillsOf, } from '@skillsmith/core';
 import { withTelemetry } from '@skillsmith/core/telemetry';
 import { hashContent } from './install.conflict-helpers.js';
-import { loadManifest, lookupSkillFromRegistry } from './install.helpers.js';
+import { loadManifestWithWarning, lookupSkillFromRegistry } from './install.helpers.js';
 import { getManifestInstalledSkillIds } from './manifest-skill-ids.helpers.js';
 import { readInstalledContent, checkDependencies } from './outdated.helpers.js';
 import { classifyOutdatedEntry, buildRegistryLookupOutcome, deriveUnknownReason, buildOutdatedDiagnosis, } from './outdated.identity.js';
@@ -32,8 +32,13 @@ import { classifyOutdatedEntry, buildRegistryLookupOutcome, deriveUnknownReason,
  * @returns OutdatedResponse with per-skill status and summary
  */
 async function executeOutdatedImpl(input, context) {
-    const manifest = await loadManifest();
-    const entries = Object.values(manifest.installedSkills);
+    // SMI-6733 Phase 2 Wave 2: `loadManifestWithWarning` (not `loadManifest`)
+    // so a degraded read's warning reaches the response (ADR-171 § 10).
+    // `installedSkillsOf` (not a bare `manifest.installedSkills`) because
+    // ADR-171 § 5's nullish carve-out means a manifest classifying `ok` can
+    // still have `installedSkills: null` — `Object.values(null)` throws.
+    const { manifest, warning } = await loadManifestWithWarning();
+    const entries = Object.values(installedSkillsOf(manifest));
     if (entries.length === 0) {
         return {
             skills: [],
@@ -46,6 +51,7 @@ async function executeOutdatedImpl(input, context) {
                 local_drift: 0,
                 identity_mismatch: 0,
             },
+            ...(warning ? { warning } : {}),
         };
     }
     const versionRepo = new SkillVersionRepository(context.db);
@@ -308,6 +314,13 @@ async function executeOutdatedImpl(input, context) {
             local_drift: localDriftCount,
             identity_mismatch: identityMismatchCount,
         },
+        // SMI-6733 Phase 2 Wave 2: threaded for symmetry with the early return
+        // above, not for coverage — `loadManifestLenient`'s only non-null-warning
+        // return is also the empty manifest, so `warning !== null` here implies
+        // `entries.length === 0`, which always takes the early return above.
+        // This branch is unreachable with a non-null `warning` and no test
+        // claims otherwise.
+        ...(warning ? { warning } : {}),
     };
 }
 // SMI-5017 W2.S2: wrap at export boundary

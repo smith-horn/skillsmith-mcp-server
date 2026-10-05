@@ -10,7 +10,7 @@
  */
 import * as os from 'os';
 import * as path from 'path';
-import { ManifestManager } from '@skillsmith/core';
+import { ManifestManager, installedSkillsOf } from '@skillsmith/core';
 // ============================================================================
 // Constants
 // ============================================================================
@@ -97,17 +97,17 @@ export function createRealComplianceService(db, options = {}) {
             // (SMI-5675) — `skills` table joined only for supplementary metadata.
             // ----------------------------------------------------------------
             const manifest = await manifestManager.load();
-            // Defensive fallback: ManifestManager.load() only guards against
-            // invalid JSON syntax (falls back to {installedSkills:{}} on a parse
-            // failure) — a manifest file that parses as valid JSON but has an
-            // unexpected shape (an old-format file, or installedSkills
-            // missing/null) is NOT caught there and would otherwise throw on
-            // Object.values() below. Degrade to "zero installed skills" rather
-            // than failing the whole compliance report.
-            const installedSkillsRecord = manifest.installedSkills && typeof manifest.installedSkills === 'object'
-                ? manifest.installedSkills
-                : {};
-            const installedEntries = Object.values(installedSkillsRecord);
+            // `load()` is fail-closed: ENOENT gives an empty manifest, every other
+            // read or parse failure throws (SMI-6007, ADR-171 § 1). It does not fall
+            // back to an empty document — an earlier comment here said it did.
+            //
+            // `installedSkillsOf` normalises a nullish `installedSkills`, which
+            // ADR-171 § 5 classifies `ok`. It validates no shape. SMI-6921.
+            //
+            // Two successive review rounds each found a false claim in the prose that
+            // used to stand here, so the prose is gone rather than corrected a third
+            // time. The issues hold the measurements; this file holds the call.
+            const installedEntries = Object.values(installedSkillsOf(manifest));
             const skills = [];
             if (installedEntries.length > 0) {
                 const metaById = fetchSkillMetadata(db, installedEntries.map((e) => e.id));

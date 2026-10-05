@@ -85,7 +85,7 @@ export declare const skillInventoryAuditToolSchema: {
 export declare const skillInventoryAudit: (input: unknown) => Promise<SkillInventoryAuditResponse | InventoryAuditValidationError>;
 /**
  * Application-level validation-error envelope. Mirrors the
- * `install.ts:buildValidationError` shape so MCP clients that introspect
+ * `install.errors.ts:buildValidationError` shape so MCP clients that introspect
  * `success` get a consistent failure surface across audit + install
  * tools.
  */

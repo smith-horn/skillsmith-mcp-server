@@ -72,6 +72,12 @@ export interface CheckUpdatesResponse {
     updatesAvailable: number;
     /** Per-skill details */
     skills: SkillUpdateInfo[];
+    /**
+     * ADR-171 § 10 (SMI-6733 Phase 2 Wave 2): present only when the local
+     * manifest read degraded. Same key, same meaning, as `skill_outdated`'s
+     * `OutdatedResponse.warning` — see that field's doc comment.
+     */
+    warning?: string;
 }
 /**
  * MCP tool definition for skill_updates

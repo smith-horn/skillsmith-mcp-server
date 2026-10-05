@@ -10,7 +10,7 @@
  * contract, the SAME pattern `outdated.ts` already uses).
  */
 import * as fs from 'node:fs/promises';
-import { compareSkillContentHashes, manifestKeyFor, } from '@skillsmith/core';
+import { compareSkillContentHashes, installedSkillsOf, manifestKeyFor, } from '@skillsmith/core';
 import { CANONICAL_CLIENT, InvalidScopeValueError, UnsatisfiableWorkspaceScopeError, parseInstallScope, resolveClientId, resolveScopedSkillsDir, } from '@skillsmith/core/install';
 import { createProseBackup, hashContent } from './install.conflict-helpers.js';
 import { lookupSkillFromRegistry } from './install.helpers.js';
@@ -65,7 +65,11 @@ export { InvalidScopeValueError, UnsatisfiableWorkspaceScopeError, CANONICAL_CLI
  */
 export function resolveReconcileEntry(manifest, name, client) {
     const key = manifestKeyFor(name, client);
-    const entry = manifest.installedSkills[key];
+    // SMI-6733 MAJOR 3: ADR-171 § 5 classifies a manifest whose
+    // `installedSkills` is `null` (or absent) as `ok`, so this reaches a
+    // nullish value while the declared type says otherwise.
+    const entries = installedSkillsOf(manifest);
+    const entry = entries[key];
     if (entry) {
         // Adversarial-review finding (Wave 4): for the CANONICAL client,
         // `manifestKeyFor` returns the bare `name` itself — the same bare key
@@ -89,7 +93,7 @@ export function resolveReconcileEntry(manifest, name, client) {
     // check whether a bare-name key exists carrying a DIFFERENT client —
     // that is the key-shape-ambiguous case, not a genuine absence.
     if (client !== CANONICAL_CLIENT) {
-        const bareEntry = manifest.installedSkills[name];
+        const bareEntry = entries[name];
         if (bareEntry && bareEntry.client && bareEntry.client !== client) {
             throw new ReconcileGuardError('manifest.reconcile.key_shape_ambiguous', {
                 name,

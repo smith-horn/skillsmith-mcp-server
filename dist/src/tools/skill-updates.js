@@ -27,7 +27,7 @@
 import { z } from 'zod';
 import { SkillVersionRepository, compareSkillContentHashes, firstNonBlankHash, } from '@skillsmith/core';
 import { withTelemetry } from '@skillsmith/core/telemetry';
-import { loadManifest } from './install.helpers.js';
+import { loadManifestWithWarning } from './install.helpers.js';
 import { getManifestInstalledSkillIds } from './manifest-skill-ids.helpers.js';
 // ============================================================================
 // Input / Output types
@@ -135,7 +135,13 @@ function buildManifestInstalledHashMap(manifest) {
  */
 async function executeSkillUpdatesImpl(input, context) {
     const versionRepo = new SkillVersionRepository(context.db);
-    const manifest = await loadManifest();
+    // SMI-6733 Phase 2 Wave 2: `loadManifestWithWarning` (not `loadManifest`)
+    // so a degraded read's warning reaches the response (ADR-171 § 10).
+    // `buildManifestInstalledHashMap` and `getManifestInstalledSkillIds`
+    // already guard against a nullish `installedSkills` (both open with
+    // `!manifest.installedSkills || typeof … !== 'object'`), so no
+    // `installedSkillsOf` migration is needed at either call site below.
+    const { manifest, warning } = await loadManifestWithWarning();
     const manifestInstalledHashes = buildManifestInstalledHashMap(manifest);
     // Determine which skill IDs to check.
     //
@@ -189,6 +195,7 @@ async function executeSkillUpdatesImpl(input, context) {
     return {
         updatesAvailable,
         skills: skillInfos,
+        ...(warning ? { warning } : {}),
     };
 }
 // SMI-5017 W2.S2: wrap at export boundary

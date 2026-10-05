@@ -82,7 +82,7 @@ export const skillInventoryAuditToolSchema = {
 /**
  * Execute the `skill_inventory_audit` tool. Validates input via Zod and
  * returns either the success response OR a structured validation-error
- * envelope (matches `install.ts:buildValidationError` pattern).
+ * envelope (matches `install.errors.ts:buildValidationError` pattern).
  */
 async function skillInventoryAuditImpl(input) {
     const parsed = skillInventoryAuditInputSchema.safeParse(input);

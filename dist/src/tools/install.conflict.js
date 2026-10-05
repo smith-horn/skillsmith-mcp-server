@@ -7,7 +7,7 @@
  */
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { safeWriteFile, manifestKeyFor } from '@skillsmith/core';
+import { safeWriteFile, manifestKeyFor, installedSkillsOf } from '@skillsmith/core';
 import { detectModifications, createSkillBackup, cleanupOldBackups, loadOriginal, storeOriginal, hashContent, } from './install.helpers.js';
 import { threeWayMerge } from './merge.js';
 import { updateManifestSafely } from './install.helpers.js';
@@ -28,7 +28,11 @@ import { updateManifestSafely } from './install.helpers.js';
  */
 export async function checkForConflicts(skillName, installPath, manifest, conflictAction, skillId, client) {
     const manifestKey = manifestKeyFor(skillName, client);
-    const existingEntry = manifest.installedSkills[manifestKey];
+    // SMI-6886: `manifest` here can have `installedSkills: null` (ADR-171 §
+    // 5's nullish carve-out — a manifest classifying `ok` is returned
+    // UNCHANGED, no substitution), so a bare `manifest.installedSkills[…]`
+    // subscript would throw `TypeError: Cannot read properties of null`.
+    const existingEntry = installedSkillsOf(manifest)[manifestKey];
     if (!existingEntry?.originalContentHash) {
         return { shouldProceed: true };
     }
@@ -104,7 +108,11 @@ export async function checkForConflicts(skillName, installPath, manifest, confli
  */
 export async function handleMergeAction(skillName, installPath, upstreamContent, manifest, owner, repo, skillId, client) {
     const manifestKey = manifestKeyFor(skillName, client);
-    const existingEntry = manifest.installedSkills[manifestKey];
+    // SMI-6886: same nullish-`installedSkills` hazard as checkForConflicts()
+    // above — see that function's comment. This function has no production
+    // caller today, so this is the sibling-miss this file's own docblock
+    // (:161-165) warns about, not a live defect.
+    const existingEntry = installedSkillsOf(manifest)[manifestKey];
     // Load original and current content
     const originalContent = await loadOriginal(skillName);
     let currentContent;
@@ -148,7 +156,7 @@ export async function handleMergeAction(skillName, installPath, upstreamContent,
         installedSkills: {
             ...currentManifest.installedSkills,
             [manifestKey]: {
-                ...currentManifest.installedSkills[manifestKey],
+                ...installedSkillsOf(currentManifest)[manifestKey],
                 lastUpdated: new Date().toISOString(),
                 originalContentHash: upstreamHash,
             },

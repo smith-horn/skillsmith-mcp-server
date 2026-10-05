@@ -8,7 +8,7 @@
  * race (see the two doc comments inside `runVerify` below) pushed the
  * combined actions file over the limit.
  */
-import { ManifestManager } from '@skillsmith/core';
+import { installedSkillsOf, ManifestManager, } from '@skillsmith/core';
 import { appendReconcileLedgerEntry } from './manifest-reconcile-ledger.js';
 import { ReconcileGuardError, resolveReconcileEntry, takeManifestBackup, verifyEntryAgainstRegistry, } from './apply-manifest-reconcile.helpers.js';
 import { withLockTimeoutMapping } from './apply-manifest-reconcile.lock-helpers.js';
@@ -34,7 +34,9 @@ export async function runVerify(input, scopeTarget, context) {
     else {
         // Batch (C3: "Batch by default"). Never hard-fails on offline/quota —
         // each entry degrades to an honest unverified result (H1 philosophy).
-        targets = Object.entries(manifest.installedSkills).map(([key, entry]) => ({
+        // SMI-6733 MAJOR 3: `Object.entries(null)` throws, and a nullish
+        // `installedSkills` classifies `ok` under ADR-171 § 5.
+        targets = Object.entries(installedSkillsOf(manifest)).map(([key, entry]) => ({
             key,
             entry: entry,
         }));
